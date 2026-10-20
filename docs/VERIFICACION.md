@@ -45,6 +45,7 @@ Las capturas generadas por `npm run test:ui` están en `.local/screenshots`:
 - `01-acceso.png`: inicio de sesión.
 - `02-dashboard.png`: panel principal con datos de la base.
 - `03-inventario.png`: existencias por lote.
+- `03b-lotes.png`: maestro de lotes diferenciado de las existencias.
 - `04-lote.png`: historial del lote.
 - `05-recepcion.png`: formulario de recepción.
 - `06-integraciones.png`: Inbox, Outbox y consumidor simulado.

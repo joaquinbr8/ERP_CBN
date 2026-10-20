@@ -66,6 +66,10 @@ try {
   await expect(page.locator("thead")).toContainText("Documento de origen");
   await expect(page.locator("thead")).toContainText("Versión");
   await expect(page.locator("thead")).not.toContainText("Reservado");
+  await page.screenshot({
+    path: ".local/screenshots/03b-lotes.png",
+    fullPage: true,
+  });
   const groups = [
     "Administración",
     "Datos maestros",
