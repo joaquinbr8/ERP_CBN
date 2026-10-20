@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: cbn_erp
+      POSTGRES_USER: cbn
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD}
+    ports: ["127.0.0.1:55433:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cbn -d cbn_erp"]
+      interval: 5s
+      retries: 10
+  rabbitmq:
+    image: rabbitmq:4-management
+    environment:
+      RABBITMQ_DEFAULT_USER: cbn
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Define RABBITMQ_PASSWORD}
+    ports: ["127.0.0.1:5672:5672", "127.0.0.1:15672:15672"]
+    volumes: ["rabbitdata:/var/lib/rabbitmq"]
+volumes:
+  pgdata:
+  rabbitdata:
