@@ -122,6 +122,10 @@ export class InventoryService {
         [article, warehouse],
       )
     ).rows;
+    const localAtp = candidates.reduce(
+      (total: Decimal, position: any) => total.plus(position.available),
+      new Decimal(0),
+    );
     let remaining = amount;
     const allocations = [];
     for (const b of candidates) {
@@ -153,10 +157,25 @@ export class InventoryService {
       });
       remaining = remaining.minus(take);
     }
-    if (remaining.gt(0))
-      fail(
-        "Stock elegible insuficiente. No se reservó nada: la transacción completa se revierte.",
+    if (remaining.gt(0)) {
+      const selectedWarehouse = await one(
+        c,
+        "SELECT name,center FROM warehouses WHERE id=$1",
+        [warehouse],
       );
+      const alternatives = (
+        await c.query(
+          `SELECT w.name,w.center,SUM(v.available) available
+           FROM inventory_view v JOIN warehouses w ON w.id=v.warehouse_id
+           WHERE v.article_id=$1 AND v.warehouse_id<>$2 AND v.available>0
+           GROUP BY w.id,w.name,w.center ORDER BY SUM(v.available) DESC`,
+          [article, warehouse],
+        )
+      ).rows;
+      fail(
+        `Stock elegible insuficiente para ${a.name} en ${selectedWarehouse?.name || warehouse}. Requerido: ${amount.toString()} ${a.unit}; ATP local: ${localAtp.toString()} ${a.unit}; faltante: ${remaining.toString()} ${a.unit}. ${alternatives.length ? `Hay ATP en otros almacenes: ${alternatives.map((item: any) => `${item.name} (${item.available})`).join(", ")}. Realiza un traslado o selecciona el almacén correcto.` : "No existe ATP en otros almacenes."} No se reservó nada: la transacción completa se revirtió.`,
+      );
+    }
     return allocations;
   }
   async release(

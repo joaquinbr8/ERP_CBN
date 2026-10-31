@@ -20,20 +20,91 @@ try {
   });
   await page.getByRole("button", { name: "Entrar al ERP" }).click();
   await page
-    .getByRole("heading", { name: "Tu inventario, en perspectiva." })
+    .getByRole("heading", {
+      name: "Sistema Inteligente de Gestión de Inventarios",
+    })
     .waitFor();
+  await page.locator('[aria-label="Cervecería Boliviana Nacional"]').waitFor();
+  await page.getByRole("alert").waitFor();
+  await expect(page.locator(".dashboard-trend .trend-series")).toHaveCount(3);
+  await expect(page.locator(".chart-legend")).toContainText("Exactitud");
+  await expect(page.locator(".chart-legend")).toContainText("FEFO");
+  await page.getByLabel("Buscar SKU o producto").fill("EN-001");
+  await page.getByRole("button", { name: "Aplicar", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
+  await page.getByRole("alert").waitFor();
+  await page.getByLabel("Filtrar por almacén").selectOption({ label: "Centro Santa Cruz" });
+  await page.getByRole("button", { name: "Aplicar", exact: true }).click();
+  await expect(
+    page.locator(".dashboard-kpis").filter({ hasText: "SKU que requieren reposición" }),
+  ).toContainText("0 de 1");
+  await expect(page.locator(".dashboard-risk-card")).toContainText(
+    "0 críticas de 1",
+  );
+  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
   await page.screenshot({
     path: ".local/screenshots/02-dashboard.png",
     fullPage: true,
   });
+  await page.getByRole("button", { name: "Ampliar gráfica" }).click();
+  await expect(page.locator(".dashboard-trend-card")).toHaveClass(/expanded/);
+  await page.getByRole("button", { name: "Restaurar gráfica" }).click();
+  await page
+    .getByRole("alert")
+    .getByRole("button", { name: "Revisar reposición" })
+    .click();
+  await page.getByRole("heading", { name: "Punto de reorden" }).waitFor();
+  await expect(page.locator(".rop-action-banner")).toContainText(
+    "artículos requieren intervención",
+  );
+  await expect(page.locator(".rop-panel tbody")).not.toContainText("CUBIERTO");
+  await page.screenshot({
+    path: ".local/screenshots/02b-reposicion.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Preparar solicitud" }).first().click();
+  await expect(page.getByRole("dialog")).toContainText("Cantidad mínima sugerida");
+  await expect(page.getByRole("dialog").locator('input[name="quantity"]')).not.toHaveValue("");
+  await page.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await page.getByRole("button", { name: /Cubiertos \(/ }).click();
+  await expect(page.locator(".rop-panel tbody")).toContainText("CUBIERTO");
+  const purchaseGroup = page.locator("nav .nav-item").filter({
+    hasText: "Compras y recepción",
+  });
+  if (!(await purchaseGroup.locator("svg.rotated").count())) await purchaseGroup.click();
+  await page.getByRole("button", { name: "Órdenes de compra", exact: true }).click();
+  await page.getByRole("heading", { name: "Órdenes de compra", exact: true }).waitFor();
+  const receivePurchase = page.getByRole("button", { name: "Recibir", exact: true });
+  if (await receivePurchase.count()) {
+    await receivePurchase.first().click();
+    await expect(page.getByRole("dialog")).toContainText(
+      "CUARENTENA",
+    );
+    await expect(page.getByRole("dialog").locator('input[name="lotId"]')).not.toHaveValue("");
+    await page.screenshot({
+      path: ".local/screenshots/02c-recepcion-compra.png",
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "Cancelar", exact: true }).click();
+  }
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
+  const inventoryGroup = page.locator("nav .nav-item").filter({
+    hasText: "Inventario y almacenes",
+  });
+  if (!(await inventoryGroup.locator("svg.rotated").count())) await inventoryGroup.click();
   await page.getByRole("button", { name: "Existencias", exact: true }).click();
   await page
     .getByRole("heading", { name: "Existencias", exact: true })
     .waitFor();
+  await expect(page.getByLabel("Planta o centro operativo")).toHaveValue("Todas");
   await page.screenshot({
     path: ".local/screenshots/03-inventario.png",
     fullPage: true,
   });
+  await expect(page.locator("thead")).toContainText("Ubicación / almacén");
+  await expect(page.locator("tbody")).toContainText(/Planta|Centro/);
+  await expect(page.getByRole("button", { name: "PT-2601", exact: true })).toHaveCount(2);
   await page.getByLabel("Buscar registros").fill("PT-2602");
   await page.getByRole("button", { name: "PT-2602", exact: true }).click();
   await page.locator(".drawer").waitFor();
@@ -63,9 +134,11 @@ try {
   await page
     .getByRole("heading", { name: "Maestro operativo de lotes", exact: true })
     .waitFor();
+  await expect(page.getByLabel("Planta o centro operativo")).toHaveValue("Todas");
   await expect(page.locator("thead")).toContainText("Documento de origen");
   await expect(page.locator("thead")).toContainText("Versión");
   await expect(page.locator("thead")).not.toContainText("Reservado");
+  await expect(page.getByRole("button", { name: "PT-2601", exact: true })).toHaveCount(1);
   await page.screenshot({
     path: ".local/screenshots/03b-lotes.png",
     fullPage: true,

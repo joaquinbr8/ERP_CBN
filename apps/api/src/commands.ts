@@ -415,6 +415,10 @@ export class Commands {
           received = new Decimal(d.data.received).plus(q);
         if (received.gt(d.data.quantity))
           fail("La recepción excede la cantidad pendiente");
+        if (await one(c, "SELECT id FROM lots WHERE id=$1", [p.lotId]))
+          fail(
+            `El lote ${p.lotId} ya existe. La recepción debe identificar el lote físico nuevo del proveedor; para corregir un saldo existente utiliza conteo y ajuste autorizado.`,
+          );
         await this.inv.newLot(c, p.lotId, d.data.articleId, p.expiry);
         await this.inv.move(c, {
           key,
@@ -432,7 +436,10 @@ export class Commands {
           received.eq(d.data.quantity) ? "RECIBIDA" : "PARCIAL",
           { ...d.data, received: received.toString() },
         );
-        break;
+        return {
+          id,
+          message: `Recepción registrada: ${q.toString()} unidades en el nuevo lote ${p.lotId}. El lote quedó en CUARENTENA y todavía no aporta ATP; Calidad debe liberarlo. Pendiente de la orden: ${new Decimal(d.data.quantity).minus(received).toString()}.`,
+        };
       }
       case "receipt.create":
         await this.inv.newLot(c, p.lotId, p.articleId, p.expiry);
@@ -857,7 +864,12 @@ export class Commands {
         };
       }
       case "replenishment.evaluate": {
-        const rows = await this.inv.planning(c);
+        const planning = await this.inv.planning(c);
+        const rows = p.articleId
+          ? planning.filter((article: any) => article.id === p.articleId)
+          : planning;
+        if (p.articleId && rows.length === 0)
+          fail("El artículo indicado no existe");
         let opened = 0;
         for (const a of rows) {
           const position = new Decimal(a.available).plus(a.incoming);

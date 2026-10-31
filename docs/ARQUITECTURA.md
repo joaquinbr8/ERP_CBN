@@ -119,4 +119,12 @@ El login usa contraseñas derivadas con scrypt, token firmado con vencimiento y 
 
 Todos los usuarios autenticados pueden consultar los datos operativos del piloto; administración y mensajería restringen sus pantallas y datos específicos. No hay segregación de lectura por almacén en esta entrega. Los roles sí restringen las escrituras.
 
+## 9. Dashboard, filtros y tercera forma normal
+
+El dashboard no guarda copias de los KPI ni mantiene una tabla paralela de “resultados”. Calcula unidades afectadas, ATP, artículos bajo ROP, exactitud y cumplimiento FEFO a partir de las entidades operativas normalizadas: `articles`, `lots`, `warehouses`, `locations`, `balances`, `reservations` y `movements`. `inventory_view` e `inventory_reconciliation` son proyecciones de lectura; no duplican la fuente oficial ni permiten escribir saldos.
+
+Las dependencias relevantes permanecen separadas: el artículo define política y ROP; el lote identifica calidad y vencimiento; la ubicación pertenece a un almacén; el saldo depende de la clave compuesta lote–ubicación; y cada movimiento referencia el lote y la ubicación donde ocurrió. Por ello, el dashboard no introduce atributos repetidos ni dependencias transitivas nuevas y conserva el modelo de inventarios en tercera forma normal.
+
+Los filtros de planta, almacén, categoría y SKU se aplican al conjunto completo de indicadores, riesgos y acciones. El rango de fechas se aplica a la evolución reconstruida desde movimientos confirmados. La alerta se deriva automáticamente de las metas: si no existe una desviación en el conjunto filtrado, el componente no se renderiza y no deja espacio vacío.
+
 No usar la base de demo local con acceso `trust` ni las contraseñas compartidas fuera de un entorno académico aislado. La vista `bi_inventory` y el endpoint de reportes son de lectura; no hay una cuenta Power BI aprovisionada ni conexión a un tenant.

@@ -9,6 +9,7 @@ import {
   BarChart3,
   Bell,
   Boxes,
+  CalendarDays,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -22,7 +23,9 @@ import {
   Layers3,
   LayoutDashboard,
   LogOut,
+  Maximize2,
   Menu,
+  Minimize2,
   Package,
   Plus,
   RefreshCw,
@@ -46,6 +49,9 @@ type Field = {
   options?: { value: string; label: string }[];
   value?: any;
   optional?: boolean;
+  hint?: string;
+  min?: number;
+  max?: number;
 };
 type Dialog = {
   action: string;
@@ -54,7 +60,56 @@ type Dialog = {
   fields: Field[];
   initial?: Row;
   source?: string;
+  insights?: { label: string; value: string; note?: string; tone?: string }[];
+  warning?: string;
+  blocked?: boolean;
 };
+type DashboardFilters = {
+  start: string;
+  end: string;
+  plant: string;
+  warehouse: string;
+  category: string;
+  sku: string;
+};
+const isoDay = (value: Date) => value.toISOString().slice(0, 10);
+const initialDashboardFilters = (): DashboardFilters => {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - 27);
+  return {
+    start: isoDay(start),
+    end: isoDay(end),
+    plant: "Todas",
+    warehouse: "Todos",
+    category: "Todas",
+    sku: "",
+  };
+};
+const number = (value: any) => Number(value || 0);
+const percent = (value: number, digits = 1) =>
+  value.toLocaleString("es-BO", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }) + "%";
+const shortDay = (value: Date) =>
+  value.toLocaleDateString("es-BO", { day: "2-digit", month: "short" });
+function CbnBrand({ product = "" }: { product?: string }) {
+  return (
+    <div className="cbn-brand-lockup" aria-label="Cervecería Boliviana Nacional">
+      <span className="cbn-wordmark">CBN</span>
+      <i />
+      <span className="cbn-company">
+        Cervecería
+        <br />
+        Boliviana
+        <br />
+        Nacional
+      </span>
+      {product && <b>{product}</b>}
+    </div>
+  );
+}
 const icons: any = {
   Dashboard: LayoutDashboard,
   Administración: ShieldCheck,
@@ -105,7 +160,19 @@ const sections: Record<string, string[]> = {
 };
 const fmt = (v: any) =>
   Number(v || 0).toLocaleString("es-BO", { maximumFractionDigits: 3 });
-const date = (v: any) => (v ? new Date(v).toLocaleDateString("es-BO") : "—");
+const date = (v: any) => {
+  if (!v) return "—";
+  const source = String(v);
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(source)
+    ? new Date(source + "T12:00:00")
+    : new Date(source);
+  return parsed.toLocaleDateString("es-BO");
+};
+const points = (value: number) =>
+  `${value > 0 ? "+" : ""}${value.toLocaleString("es-BO", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  })} pp`;
 const statusLabel = (s: any) => String(s || "—").replaceAll("_", " ");
 function Badge({ value }: { value: any }) {
   const s = String(value || "");
@@ -149,6 +216,7 @@ function App() {
   const [open, setOpen] = useState("Inventario y almacenes");
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("Todas");
+  const [plantFilter, setPlantFilter] = useState("Todas");
   const [wh, setWh] = useState("Todos");
   const [quality, setQuality] = useState("Todos");
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -160,6 +228,15 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [mobile, setMobile] = useState(false);
   const [lastEvent, setLastEvent] = useState<Row | null>(null);
+  const [dashboardDraft, setDashboardDraft] = useState<DashboardFilters>(() =>
+    initialDashboardFilters(),
+  );
+  const [dashboardFilters, setDashboardFilters] = useState<DashboardFilters>(
+    () => initialDashboardFilters(),
+  );
+  const [dismissedAlert, setDismissedAlert] = useState("");
+  const [expandedPanel, setExpandedPanel] = useState("");
+  const [replenishmentView, setReplenishmentView] = useState("attention");
   const can = (p: string) =>
     data?.user?.permissions.includes("*") ||
     data?.user?.permissions.includes(p);
@@ -183,8 +260,11 @@ function App() {
     setPage(p);
     setQuery("");
     setCategory("Todas");
+    setPlantFilter("Todas");
     setWh("Todos");
     setQuality(p === "Lotes pendientes" ? "CUARENTENA" : "Todos");
+    if (p === "Punto de reorden" || p === "Indicadores")
+      setReplenishmentView("attention");
     setMobile(false);
   }
   async function send(
@@ -215,10 +295,21 @@ function App() {
     }
   }
   const options = (name: string, label = "name") =>
-    (data?.[name] || []).map((r: Row) => ({
-      value: r.id,
-      label: r.id + " · " + (r[label] || r.id),
-    }));
+    (data?.[name] || []).map((r: Row) => {
+      const warehouse =
+        name === "locations"
+          ? (data.warehouses || []).find(
+              (item: Row) => item.id === r.warehouse_id,
+            )
+          : null;
+      const description =
+        name === "locations"
+          ? `${r.name} — ${warehouse?.name || r.warehouse_id}${warehouse?.center ? ` / ${warehouse.center}` : ""}`
+          : name === "warehouses" && r.center
+            ? `${r[label] || r.id} — ${r.center}`
+            : r[label] || r.id;
+      return { value: r.id, label: `${r.id} · ${description}` };
+    });
   const field = (
     key: string,
     label: string,
@@ -246,8 +337,56 @@ function App() {
     initial: Row = {},
     description = "La operación se valida y registra en una transacción. Repetir la misma referencia no duplica el efecto.",
     source = "ERP_WEB",
+    insights?: Dialog["insights"],
+    warning?: string,
+    blocked = false,
   ) {
-    setDialog({ action, title, fields, initial, description, source });
+    setDialog({
+      action,
+      title,
+      fields,
+      initial,
+      description,
+      source,
+      insights,
+      warning,
+      blocked,
+    });
+  }
+  function suggestedLotId(articleId: string) {
+    const day = isoDay(new Date()).replaceAll("-", "");
+    const base = `${articleId}-${day}`;
+    const existing = new Set((data.lots || []).map((lot: Row) => lot.id));
+    let sequence = 1;
+    let candidate = `${base}-${String(sequence).padStart(2, "0")}`;
+    while (existing.has(candidate)) {
+      sequence += 1;
+      candidate = `${base}-${String(sequence).padStart(2, "0")}`;
+    }
+    return candidate;
+  }
+  function prepareReplenishmentRequest(row: Row) {
+    show(
+      "request.create",
+      "Solicitud de compra sugerida",
+      [
+        field("id", "Solicitud", "text", reference("SC")),
+        { ...select("articleId", "Artículo", "articles"), value: row.id },
+        {
+          ...field("quantity", "Cantidad mínima sugerida", "number", row.gap),
+          min: 0.001,
+          hint: "Brecha actual para recuperar el ROP. Compras puede ajustarla por empaque, EOQ o condiciones del proveedor.",
+        },
+        field(
+          "reason",
+          "Necesidad / justificación",
+          "text",
+          `Reposición por brecha ROP: posición ${fmt(row.position)}, ROP ${fmt(row.rop)}, brecha ${fmt(row.gap)}.`,
+        ),
+      ],
+      {},
+      `La brecha mínima actual de ${row.name} es ${fmt(row.gap)} ${row.unit}. Esta cantidad recupera el umbral ROP; no reemplaza la decisión de lote económico ni las restricciones de compra.`,
+    );
   }
   function create(kind: string) {
     switch (kind) {
@@ -421,10 +560,14 @@ function App() {
               "number",
             ),
             select("outputArticle", "Producto de salida", "articles"),
-            select("warehouseId", "Almacén del material", "warehouses"),
+            select(
+              "warehouseId",
+              "Almacén que abastecerá el material",
+              "warehouses",
+            ),
           ],
           {},
-          "Prototipo: una materia prima por orden. El resultado registra producto, genealogía y merma opcional.",
+          "Prototipo: una materia prima por orden. La reserva solo utiliza ATP elegible del almacén seleccionado; no toma stock automáticamente de otras plantas.",
         );
         break;
     }
@@ -481,6 +624,23 @@ function App() {
         );
         break;
       case "receive":
+        {
+        const article = (data.articles || []).find(
+          (item: Row) => item.id === row.data.articleId,
+        );
+        const planning = (data.planning || []).find(
+          (item: Row) => item.id === row.data.articleId,
+        );
+        const pending = Math.max(
+          0,
+          number(row.data.quantity) - number(row.data.received),
+        );
+        const currentAtp = number(planning?.available);
+        const otherIncoming = Math.max(0, number(planning?.incoming) - pending);
+        const minimumEligible = Math.max(
+          0,
+          number(planning?.rop) - currentAtp - otherIncoming,
+        );
         show(
           "purchase.receive",
           "Recepción de compra",
@@ -491,19 +651,48 @@ function App() {
               "text",
               reference("REC"),
             ),
-            field("lotId", "Nuevo lote"),
+            {
+              ...field(
+                "lotId",
+                "Lote recibido (nuevo y único)",
+                "text",
+                suggestedLotId(row.data.articleId),
+              ),
+              hint: "Usa el lote impreso por el proveedor. No se suma a un lote anterior porque debe conservar su propia trazabilidad.",
+            },
             select("locationId", "Ubicación", "locations"),
-            field(
-              "quantity",
-              "Cantidad recibida",
-              "number",
-              Number(row.data.quantity) - Number(row.data.received),
-            ),
-            { ...field("expiry", "Vencimiento", "date"), optional: true },
+            {
+              ...field("quantity", "Cantidad realmente recibida", "number", pending),
+              min: 0.001,
+              max: pending,
+              hint: `Pendiente en la orden: ${fmt(pending)} ${article?.unit || "u."}. Se permiten entregas parciales; nunca registres más de lo que llegó físicamente.`,
+            },
+            {
+              ...field("expiry", "Vencimiento del nuevo lote", "date"),
+              optional: article?.policy !== "FEFO",
+              hint:
+                article?.policy === "FEFO"
+                  ? "Obligatorio para aplicar primero vence, primero sale."
+                  : "Opcional para artículos FIFO sin vencimiento.",
+            },
           ],
           initial,
-          "Se admiten recepciones parciales. El lote queda en cuarentena; el tránsito pendiente se reduce.",
+          `Orden ${row.id} · ${article?.name || row.data.articleId}. Registra la entrega real del proveedor; la recepción reduce el tránsito pendiente.`,
+          "ERP_WEB",
+          [
+            { label: "ATP actual", value: `${fmt(currentAtp)} ${article?.unit || ""}` },
+            { label: "ROP", value: `${fmt(planning?.rop)} ${article?.unit || ""}` },
+            {
+              label: "Mínimo a liberar",
+              value: `${fmt(minimumEligible)} ${article?.unit || ""}`,
+              note: "Para recuperar el ROP con la fotografía actual",
+              tone: minimumEligible > 0 ? "warning" : "good",
+            },
+            { label: "Pendiente de la orden", value: `${fmt(pending)} ${article?.unit || ""}` },
+          ],
+          "La recepción crea existencia física en CUARENTENA: su ATP seguirá en 0 hasta que Calidad libere el nuevo lote. Después de liberarlo, el ATP y el diagnóstico ROP se recalculan automáticamente.",
         );
+        }
         break;
       case "quality":
         show(
@@ -568,6 +757,78 @@ function App() {
           "Una devolución por pedido en este piloto. Regresa en cuarentena y requiere nueva revisión de Calidad.",
         );
         break;
+      case "production.reserve": {
+        const warehouse = (data.warehouses || []).find(
+          (item: Row) => item.id === row.data.warehouseId,
+        );
+        const article = (data.articles || []).find(
+          (item: Row) => item.id === row.data.inputArticle,
+        );
+        const requiredQuantity = number(row.data.inputQuantity);
+        const localAtp = (data.inventory || [])
+          .filter(
+            (item: Row) =>
+              item.article_id === row.data.inputArticle &&
+              item.warehouse_id === row.data.warehouseId,
+          )
+          .reduce(
+            (total: number, item: Row) => total + number(item.available),
+            0,
+          );
+        const alternatives = (data.warehouses || [])
+          .map((candidate: Row) => ({
+            ...candidate,
+            atp: (data.inventory || [])
+              .filter(
+                (item: Row) =>
+                  item.article_id === row.data.inputArticle &&
+                  item.warehouse_id === candidate.id,
+              )
+              .reduce(
+                (total: number, item: Row) => total + number(item.available),
+                0,
+              ),
+          }))
+          .filter(
+            (candidate: Row) =>
+              candidate.id !== row.data.warehouseId && candidate.atp > 0,
+          )
+          .sort((a: Row, b: Row) => b.atp - a.atp);
+        show(
+          "production.reserve",
+          "Reservar material para producción",
+          [],
+          initial,
+          `Orden ${row.id} · ${article?.name || row.data.inputArticle}. La reserva se realizará únicamente en ${warehouse?.name || row.data.warehouseId}.`,
+          "ERP_WEB",
+          [
+            {
+              label: "Material requerido",
+              value: `${fmt(requiredQuantity)} ${article?.unit || ""}`,
+            },
+            {
+              label: "ATP en el almacén",
+              value: `${fmt(localAtp)} ${article?.unit || ""}`,
+              tone: localAtp >= requiredQuantity ? "good" : "warning",
+            },
+            {
+              label: "Almacén seleccionado",
+              value: warehouse?.name || row.data.warehouseId,
+              note: warehouse?.center || row.data.warehouseId,
+            },
+            {
+              label: "Faltante",
+              value: `${fmt(Math.max(0, requiredQuantity - localAtp))} ${article?.unit || ""}`,
+              tone: localAtp >= requiredQuantity ? "good" : "warning",
+            },
+          ],
+          localAtp >= requiredQuantity
+            ? `Hay ATP suficiente. El sistema asignará lotes ${article?.policy || "FIFO/FEFO"} del almacén seleccionado y aumentará su cantidad reservada; el físico se descuenta al registrar el resultado de producción.`
+            : `ATP local insuficiente. Stock elegible en otros almacenes: ${alternatives.length ? alternatives.map((item: Row) => `${item.name}: ${fmt(item.atp)}`).join("; ") : "ninguno"}. Crea y recibe un traslado hacia ${warehouse?.name || row.data.warehouseId}, o planifica una nueva orden en un almacén que sí tenga ATP.`,
+          localAtp < requiredQuantity,
+        );
+        break;
+      }
       case "finish":
         show(
           "production.finish",
@@ -664,8 +925,13 @@ function App() {
       (k) => k === page || sections[k].includes(page),
     ) || "Dashboard";
   const inv: Row[] = data.inventory || [];
+  const warehouseMatchesPlant = (warehouseId: string) => {
+    if (plantFilter === "Todas") return true;
+    return warehouseId === plantFilter;
+  };
   const filtered = inv.filter(
     (r) =>
+      warehouseMatchesPlant(r.warehouse_id) &&
       (wh === "Todos" || r.warehouse_id === wh) &&
       (quality === "Todos" || r.quality === quality) &&
       (category === "Todas" || r.category === category) &&
@@ -685,6 +951,20 @@ function App() {
     ];
     const sum = (key: string) =>
       positions.reduce((total: number, r: Row) => total + Number(r[key]), 0);
+    const positionDescriptions = positions.map((position: Row) => {
+      const location = (data.locations || []).find(
+        (item: Row) => item.id === position.location_id,
+      );
+      const warehouse = (data.warehouses || []).find(
+        (item: Row) => item.id === position.warehouse_id,
+      );
+      return {
+        id: position.location_id,
+        location: location?.name || position.location_id,
+        warehouse: warehouse?.name || position.warehouse_id,
+        center: warehouse?.center || "",
+      };
+    });
     return {
       ...lot,
       lot_id: lot.id,
@@ -697,6 +977,7 @@ function App() {
       available: sum("available"),
       blocked: sum("blocked"),
       locations: unique("location_id").join(", ") || "Sin existencia",
+      location_descriptions: positionDescriptions,
       warehouses: unique("warehouse_id"),
       position_count: positions.length,
       origin: origin?.document_id || origin?.type || "Sin referencia",
@@ -706,6 +987,9 @@ function App() {
   });
   const filteredLots = lotRows.filter(
     (r) =>
+      r.warehouses.some((warehouseId: string) =>
+        warehouseMatchesPlant(warehouseId),
+      ) &&
       (wh === "Todos" || r.warehouses.includes(wh)) &&
       (quality === "Todos" || r.quality === quality) &&
       (category === "Todas" || r.category === category) &&
@@ -715,6 +999,461 @@ function App() {
     (a: Row) => Number(a.available) + Number(a.incoming) <= Number(a.rop),
   );
   const held = inv.filter((r) => Number(r.blocked) > 0);
+  const warehouseById = new Map<string, Row>(
+    (data.warehouses || []).map(
+      (warehouse: Row) => [warehouse.id, warehouse] as [string, Row],
+    ),
+  );
+  const locationById = new Map<string, Row>(
+    (data.locations || []).map(
+      (location: Row) => [location.id, location] as [string, Row],
+    ),
+  );
+  const lotById = new Map<string, Row>(
+    (data.lots || []).map((lot: Row) => [lot.id, lot] as [string, Row]),
+  );
+  const articleById = new Map<string, Row>(
+    (data.articles || []).map(
+      (article: Row) => [article.id, article] as [string, Row],
+    ),
+  );
+  const documentById = new Map<string, Row>(
+    (data.documents || []).map(
+      (document: Row) => [document.id, document] as [string, Row],
+    ),
+  );
+  const dashboardPlants = [
+    ...new Set(
+      (data.warehouses || [])
+        .map((warehouse: Row) => warehouse.center)
+        .filter(Boolean),
+    ),
+  ] as string[];
+  const dashboardWarehouseIds = new Set(
+    (data.warehouses || [])
+      .filter(
+        (warehouse: Row) =>
+          (dashboardFilters.plant === "Todas" ||
+            warehouse.center === dashboardFilters.plant) &&
+          (dashboardFilters.warehouse === "Todos" ||
+            warehouse.id === dashboardFilters.warehouse),
+      )
+      .map((warehouse: Row) => warehouse.id),
+  );
+  const dashboardArticleMatches = (article: Row) => {
+    const needle = dashboardFilters.sku.trim().toLowerCase();
+    return (
+      (dashboardFilters.category === "Todas" ||
+        article.category === dashboardFilters.category) &&
+      (!needle ||
+        article.id.toLowerCase().includes(needle) ||
+        article.name.toLowerCase().includes(needle))
+    );
+  };
+  const dashboardArticles: Row[] = (data.articles || []).filter(
+    dashboardArticleMatches,
+  ) as Row[];
+  const dashboardArticleIds = new Set(
+    dashboardArticles.map((article: Row) => article.id),
+  );
+  const dashboardInventory = inv.filter(
+    (row) =>
+      dashboardArticleIds.has(row.article_id) &&
+      dashboardWarehouseIds.has(row.warehouse_id),
+  );
+  const dashboardLotIds = new Set(
+    dashboardInventory.map((row) => row.lot_id),
+  );
+  const dashboardPhysical = dashboardInventory.reduce(
+    (total, row) => total + number(row.physical),
+    0,
+  );
+  const dashboardAvailable = dashboardInventory.reduce(
+    (total, row) => total + number(row.available),
+    0,
+  );
+  const dashboardBlocked = dashboardInventory.reduce(
+    (total, row) => total + number(row.blocked),
+    0,
+  );
+  const affectedUnitsPct = dashboardPhysical
+    ? (dashboardBlocked / dashboardPhysical) * 100
+    : 0;
+  const atpPct = dashboardPhysical
+    ? (dashboardAvailable / dashboardPhysical) * 100
+    : 100;
+  const dashboardPositionedArticleIds = new Set(
+    dashboardInventory.map((row: Row) => row.article_id),
+  );
+  const dashboardPlanning = dashboardArticles
+    // ROP is evaluated only for SKUs handled by the selected scope. A SKU that
+    // has never had a position in Santa Cruz, for example, must not be counted
+    // as a Santa Cruz shortage merely because its local balance is zero.
+    .filter((article: Row) => dashboardPositionedArticleIds.has(article.id))
+    .map((article: Row) => {
+    const positions = dashboardInventory.filter(
+      (row) => row.article_id === article.id,
+    );
+    const available = positions.reduce(
+      (total, row) => total + number(row.available),
+      0,
+    );
+    const planning = (data.planning || []).find(
+      (row: Row) => row.id === article.id,
+    );
+    const incoming =
+      dashboardFilters.warehouse === "Todos" ? number(planning?.incoming) : 0;
+    const rop =
+      number(article.daily_demand) * number(article.lead_days) +
+      number(article.safety_stock);
+      return {
+        ...article,
+        available,
+        incoming,
+        position: available + incoming,
+        rop,
+        underRop: available + incoming <= rop,
+      };
+    });
+  const dashboardLow = dashboardPlanning.filter((row: Row) => row.underRop);
+  const lowPct = dashboardPlanning.length
+    ? (dashboardLow.length / dashboardPlanning.length) * 100
+    : 0;
+  const dashboardReconciliation = (data.reconciliation || []).filter(
+    (row: Row) =>
+      dashboardLotIds.has(row.lot_id) &&
+      dashboardWarehouseIds.has(locationById.get(row.location_id)?.warehouse_id),
+  );
+  const reconciliationDifference = dashboardReconciliation.reduce(
+    (total: number, row: Row) =>
+      total +
+      Math.abs(number(row.difference)) +
+      Math.abs(number(row.reservation_difference)),
+    0,
+  );
+  const dashboardCounts = (data.counts || []).filter((row: Row) => {
+    const location = locationById.get(row.location_id);
+    return (
+      row.status === "APROBADO" &&
+      dashboardLotIds.has(row.lot_id) &&
+      location &&
+      dashboardWarehouseIds.has(location.warehouse_id)
+    );
+  });
+  const countedTheoretical = dashboardCounts.reduce(
+    (total: number, row: Row) => total + number(row.theoretical),
+    0,
+  );
+  const countedDifference = dashboardCounts.reduce(
+    (total: number, row: Row) =>
+      total + Math.abs(number(row.counted) - number(row.theoretical)),
+    0,
+  );
+  const accuracyPct = countedTheoretical
+    ? Math.max(0, 100 - (countedDifference / countedTheoretical) * 100)
+    : dashboardPhysical
+      ? Math.max(0, 100 - (reconciliationDifference / dashboardPhysical) * 100)
+      : 100;
+  const fefoArticleIds = new Set(
+    dashboardArticles
+      .filter((article: Row) => article.policy === "FEFO")
+      .map((article: Row) => article.id),
+  );
+  const fefoReservations = (data.reservations || []).filter((row: Row) => {
+    const lot = lotById.get(row.lot_id);
+    return lot && fefoArticleIds.has(lot.article_id) && dashboardLotIds.has(row.lot_id);
+  });
+  const fefoCorrect = fefoReservations.filter((row: Row) =>
+    String(row.explanation || "").startsWith("FEFO:"),
+  ).length;
+  const fefoPct = fefoReservations.length
+    ? (fefoCorrect / fefoReservations.length) * 100
+    : 100;
+  const expiringSoon = dashboardInventory.filter((row) => {
+    if (!row.expiry || number(row.physical) <= 0) return false;
+    const days = Math.ceil(
+      (new Date(row.expiry).getTime() - Date.now()) / 86400000,
+    );
+    return days >= 0 && days <= 30;
+  }).length;
+  const dashboardRisk: Row[] = (data.warehouses || [])
+    .filter((warehouse: Row) => dashboardWarehouseIds.has(warehouse.id))
+    .map((warehouse: Row) => {
+      const positions = dashboardInventory.filter(
+        (row) => row.warehouse_id === warehouse.id,
+      );
+      // Evaluate only the SKUs that actually have an inventory position in this
+      // warehouse. Counting the complete catalogue made every warehouse look as
+      // though it was responsible for SKUs it never stores.
+      const positionedArticleIds = new Set(
+        positions.map((position: Row) => position.article_id),
+      );
+      const evaluatedArticles = dashboardArticles.filter((article: Row) =>
+        positionedArticleIds.has(article.id),
+      );
+      const articlePlanning = evaluatedArticles.map((article: Row) => {
+        const available = positions
+          .filter((row) => row.article_id === article.id)
+          .reduce((total, row) => total + number(row.available), 0);
+        const rop =
+          number(article.daily_demand) * number(article.lead_days) +
+          number(article.safety_stock);
+        return {
+          underRop: available <= rop,
+          gap: Math.max(0, rop - available),
+        };
+      });
+      const belowRop = articlePlanning.filter((article) => article.underRop).length;
+      const evaluated = evaluatedArticles.length;
+      return {
+        id: warehouse.id,
+        name: warehouse.name,
+        belowRop,
+        evaluated,
+        riskPct: evaluated ? (belowRop / evaluated) * 100 : 0,
+        gap: articlePlanning.reduce(
+          (total, article) => total + article.gap,
+          0,
+        ),
+      };
+    })
+    .filter((warehouse: Row) => warehouse.evaluated > 0)
+    .sort(
+      (a: Row, b: Row) =>
+        b.riskPct - a.riskPct || b.gap - a.gap,
+    );
+  const dashboardRiskGapMax = Math.max(
+    1,
+    ...dashboardRisk.map((row: Row) => row.gap),
+  );
+  const dashboardRiskBelowTotal = dashboardRisk.reduce(
+    (total: number, row: Row) => total + number(row.belowRop),
+    0,
+  );
+  const dashboardRiskEvaluatedTotal = dashboardRisk.reduce(
+    (total: number, row: Row) => total + number(row.evaluated),
+    0,
+  );
+  const dashboardRiskGapTotal = dashboardRisk.reduce(
+    (total: number, row: Row) => total + number(row.gap),
+    0,
+  );
+  const trendStart = new Date(dashboardFilters.start + "T00:00:00");
+  const trendEnd = new Date(dashboardFilters.end + "T23:59:59");
+  const trendSpan = Math.max(1, trendEnd.getTime() - trendStart.getTime());
+  const trendMovements = (data.movements || []).filter((movement: Row) => {
+    const lot = lotById.get(movement.lot_id);
+    const location = locationById.get(movement.location_id);
+    return (
+      lot &&
+      location &&
+      dashboardArticleIds.has(lot.article_id) &&
+      dashboardWarehouseIds.has(location.warehouse_id)
+    );
+  });
+  const trendFefoReservations = fefoReservations
+    .map((reservation: Row) => ({
+      ...reservation,
+      eventDate: documentById.get(reservation.document_id)?.created_at,
+    }))
+    .filter((reservation: Row) => reservation.eventDate);
+  const trendPoints = Array.from({ length: 7 }, (_, index) => {
+    const pointDate = new Date(
+      trendStart.getTime() + (trendSpan * index) / 6,
+    );
+    const physicalAt = trendMovements
+      .filter(
+        (movement: Row) =>
+          new Date(movement.created_at).getTime() <= pointDate.getTime(),
+      )
+      .reduce((total: number, movement: Row) => total + number(movement.quantity), 0);
+    const eligibleAt = trendMovements
+      .filter((movement: Row) => {
+        if (new Date(movement.created_at).getTime() > pointDate.getTime())
+          return false;
+        const lot = lotById.get(movement.lot_id);
+        return (
+          lot?.quality === "LIBERADO" &&
+          (!lot.expiry || new Date(lot.expiry).getTime() >= pointDate.getTime())
+        );
+      })
+      .reduce((total: number, movement: Row) => total + number(movement.quantity), 0);
+    const presentLots = new Set(
+      trendMovements
+        .filter(
+          (movement: Row) =>
+            new Date(movement.created_at).getTime() <= pointDate.getTime(),
+        )
+        .map((movement: Row) => movement.lot_id),
+    );
+    const reservedAt = dashboardInventory
+      .filter((row) => presentLots.has(row.lot_id) && number(row.available) > 0)
+      .reduce((total, row) => total + number(row.reserved), 0);
+    const countsAt = dashboardCounts.filter(
+      (row: Row) =>
+        new Date(row.created_at).getTime() <= pointDate.getTime(),
+    );
+    const theoreticalAt = countsAt.reduce(
+      (total: number, row: Row) => total + number(row.theoretical),
+      0,
+    );
+    const countDifferenceAt = countsAt.reduce(
+      (total: number, row: Row) =>
+        total + Math.abs(number(row.counted) - number(row.theoretical)),
+      0,
+    );
+    const fefoAt = trendFefoReservations.filter(
+      (row: Row) =>
+        new Date(row.eventDate).getTime() <= pointDate.getTime(),
+    );
+    const fefoCorrectAt = fefoAt.filter((row: Row) =>
+      String(row.explanation || "").startsWith("FEFO:"),
+    ).length;
+    return {
+      label: shortDay(pointDate),
+      atp: physicalAt
+        ? Math.max(
+            0,
+            Math.min(100, ((eligibleAt - reservedAt) / physicalAt) * 100),
+          )
+        : null,
+      accuracy: theoreticalAt
+        ? Math.max(0, 100 - (countDifferenceAt / theoreticalAt) * 100)
+        : null,
+      fefo: fefoAt.length ? (fefoCorrectAt / fefoAt.length) * 100 : null,
+    };
+  });
+  const dashboardRows: Row[] = dashboardInventory
+    .map((row: Row): Row => {
+      const article = articleById.get(row.article_id);
+      const planning = dashboardPlanning.find(
+        (item: Row) => item.id === row.article_id,
+      );
+      const daysToExpiry = row.expiry
+        ? Math.ceil((new Date(row.expiry).getTime() - Date.now()) / 86400000)
+        : null;
+      const articleAtp = dashboardInventory
+        .filter((position) => position.article_id === row.article_id)
+        .reduce((total, position) => total + number(position.available), 0);
+      const lotIneligible =
+        row.quality !== "LIBERADO" ||
+        (row.expiry && new Date(row.expiry).getTime() < Date.now());
+      const noArticleAtp = articleAtp <= 0;
+      const critical = noArticleAtp || Boolean(planning?.underRop);
+      const warning = !critical && daysToExpiry !== null && daysToExpiry <= 30;
+      const unavailableLot = !critical && number(row.available) <= 0;
+      return {
+        ...row,
+        article,
+        articleAtp,
+        rop: planning?.rop || 0,
+        daysToExpiry,
+        severity: critical ? 2 : warning || unavailableLot ? 1 : 0,
+        statusText:
+          noArticleAtp
+            ? "Crítico · Sin ATP del artículo"
+            : planning?.underRop
+              ? "Crítico · Bajo ROP"
+              : lotIneligible
+                ? "Atención · Lote no elegible"
+                : unavailableLot
+                  ? "Atención · Lote sin saldo libre"
+              : warning
+                ? "Atención · Próximo a vencer"
+                : "Cumple",
+        actionPage:
+          noArticleAtp || planning?.underRop
+            ? "Punto de reorden"
+            : lotIneligible
+              ? "Lotes"
+              : unavailableLot
+                ? "Reservas"
+                : warning
+                  ? "Preparación FIFO/FEFO"
+                  : "",
+        actionLabel:
+          noArticleAtp || planning?.underRop
+            ? "Revisar reposición"
+            : lotIneligible
+              ? "Revisar lote"
+              : unavailableLot
+                ? "Revisar reservas"
+                : warning
+                  ? "Priorizar FEFO"
+                  : "",
+      };
+    })
+    .sort(
+      (a: Row, b: Row) =>
+        b.severity - a.severity ||
+        number(a.available) - number(b.available),
+    )
+    .slice(0, 6);
+  const dashboardAlert =
+    accuracyPct < 95
+      ? {
+          key: "accuracy",
+          level: "critical",
+          title: "Exactitud del inventario por debajo de la meta",
+          detail: `La exactitud es ${percent(accuracyPct)} y la meta es 95%. Revisa las diferencias de conteo antes de prometer inventario.`,
+          gap: `BRECHA: ${points(accuracyPct - 95)}`,
+          action: "Revisar conteos",
+          page: "Conteos y diferencias",
+        }
+      : atpPct < 90
+        ? {
+            key: "atp",
+            level: "critical",
+            title: "Disponibilidad ATP por debajo de la meta",
+            detail: `El ATP es ${percent(atpPct)} frente a la meta de 90%. Hay riesgo de prometer unidades que no están libres.`,
+            gap: `BRECHA: ${points(atpPct - 90)}`,
+            action: "Revisar existencias",
+            page: "Existencias",
+          }
+        : dashboardLow.length > 0
+          ? {
+              key: "rop-" + dashboardLow.map((row: Row) => row.id).join("-"),
+              level: "warning",
+              title: "Reposición requerida para evitar quiebres",
+              detail: `${dashboardLow.length} de ${dashboardPlanning.length} SKU están bajo su punto de reorden. Prioriza ${dashboardLow
+                .slice(0, 3)
+                .map((row: Row) => row.id)
+                .join(", ")}.`,
+              gap: `${percent(lowPct)} DEL PORTAFOLIO`,
+              action: "Revisar reposición",
+              page: "Punto de reorden",
+            }
+          : affectedUnitsPct > 5
+            ? {
+                key: "affected",
+                level: "warning",
+                title: "Unidades retenidas por encima del límite",
+                detail: `${percent(affectedUnitsPct)} del stock está bloqueado o no es elegible. La meta máxima es 5%.`,
+                gap: `EXCESO: ${points(affectedUnitsPct - 5)}`,
+                action: "Revisar calidad",
+                page: "Lotes pendientes",
+              }
+            : fefoPct < 95
+              ? {
+                  key: "fefo",
+                  level: "warning",
+                  title: "Cumplimiento FEFO por debajo de la meta",
+                  detail: `El cumplimiento es ${percent(fefoPct)} frente a la meta de 95%. Revisa la preparación de lotes próximos a vencer.`,
+                  gap: `BRECHA: ${points(fefoPct - 95)}`,
+                  action: "Revisar reservas",
+                  page: "Preparación FIFO/FEFO",
+                }
+              : expiringSoon > 0
+                ? {
+                    key: "expiry-" + expiringSoon,
+                    level: "warning",
+                    title: "Lotes próximos a vencer",
+                    detail: `${expiringSoon} posiciones de inventario vencen en los próximos 30 días y requieren prioridad FEFO.`,
+                    gap: `${expiringSoon} POSICIONES`,
+                    action: "Revisar lotes",
+                    page: "Lotes",
+                  }
+                : null;
   const pending =
     data.outbox?.filter((r: Row) => r.status !== "ENVIADO").length || 0;
   const permission =
@@ -940,7 +1679,23 @@ function App() {
             </button>
           ),
         },
-        { key: "location_id", label: "Ubicación" },
+        {
+          key: "location_id",
+          label: "Ubicación / almacén",
+          render: (r) => {
+            const location = locationById.get(r.location_id);
+            const warehouse = warehouseById.get(r.warehouse_id);
+            return (
+              <div>
+                <strong>{location?.name || r.location_id}</strong>
+                <small>
+                  {r.location_id} · {warehouse?.name || r.warehouse_id}
+                  {warehouse?.center ? ` / ${warehouse.center}` : ""}
+                </small>
+              </div>
+            );
+          },
+        },
         {
           key: "quality",
           label: "Calidad",
@@ -1025,11 +1780,23 @@ function App() {
         },
         {
           key: "locations",
-          label: "Ubicaciones",
+          label: "Ubicación / planta",
           render: (r) => (
             <div>
-              <strong>{r.locations}</strong>
-              <small>{r.position_count} posición(es)</small>
+              <strong>
+                {r.location_descriptions?.length
+                  ? [...new Set(r.location_descriptions.map((item: Row) => item.location))].join(", ")
+                  : "Sin existencia"}
+              </strong>
+              <small>
+                {r.location_descriptions?.length
+                  ? [...new Set(
+                      r.location_descriptions.map(
+                        (item: Row) => `${item.id} · ${item.warehouse}${item.center ? ` / ${item.center}` : ""}`,
+                      ),
+                    )].join("; ")
+                  : `${r.position_count} posición(es)`}
+              </small>
             </div>
           ),
         },
@@ -1062,26 +1829,42 @@ function App() {
         {
           key: "data",
           label: "Detalle",
-          render: (r) => (
-            <div>
-              <strong>
-                {r.data.customer ||
-                  r.data.articleId ||
-                  r.data.outputArticle ||
-                  r.data.lotId}
-              </strong>
-              <small>
-                {r.data.quantity || r.data.inputQuantity}{" "}
-                {r.data.supplierId ? " · " + r.data.supplierId : ""}
-              </small>
-              {r.data.promise && (
+          render: (r) => {
+            if (r.kind === "PRODUCCION") {
+              const warehouse = (data.warehouses || []).find(
+                (item: Row) => item.id === r.data.warehouseId,
+              );
+              return (
+                <div>
+                  <strong>Salida: {r.data.outputArticle}</strong>
+                  <small>
+                    Material: {r.data.inputArticle} · {r.data.inputQuantity}
+                  </small>
+                  <small>
+                    Abastece: {warehouse?.name || r.data.warehouseId}
+                    {warehouse?.center ? ` · ${warehouse.center}` : ""}
+                  </small>
+                </div>
+              );
+            }
+            return (
+              <div>
+                <strong>
+                  {r.data.customer || r.data.articleId || r.data.lotId}
+                </strong>
                 <small>
-                  Promesa v{r.data.promise.version}: {r.data.promise.date} ·
-                  estimada
+                  {r.data.quantity}{" "}
+                  {r.data.supplierId ? " · " + r.data.supplierId : ""}
                 </small>
-              )}
-            </div>
-          ),
+                {r.data.promise && (
+                  <small>
+                    Promesa v{r.data.promise.version}: {r.data.promise.date} ·
+                    estimada
+                  </small>
+                )}
+              </div>
+            );
+          },
         },
         {
           key: "status",
@@ -1148,141 +1931,498 @@ function App() {
   function content() {
     if (page === "Dashboard")
       return (
-        <>
-          <div className="welcome">
+        <div className="executive-dashboard">
+          {expandedPanel && (
+            <button
+              className="dashboard-expand-backdrop"
+              aria-label="Cerrar vista ampliada"
+              onClick={() => setExpandedPanel("")}
+            />
+          )}
+          <div className="dashboard-title-row">
             <div>
-              <span className="eyebrow">CONTROL OPERATIVO · CBN PILOTO</span>
-              <h1>Tu inventario, en perspectiva.</h1>
+              <span className="eyebrow">CONTROL OPERATIVO · INVENTARIOS</span>
+              <h1>Sistema Inteligente de Gestión de Inventarios</h1>
               <p>
-                Del ingreso del material a la entrega. Una sola fuente de
-                verdad.
+                Estado ejecutivo del stock, la disponibilidad y el riesgo de
+                reposición.
               </p>
             </div>
-            <div className="welcome-icon">
-              <Boxes size={64} strokeWidth={1} />
+            <div className="dashboard-updated">
+              <RefreshCw size={13} /> Última actualización
+              <strong>{new Date().toLocaleString("es-BO")}</strong>
             </div>
           </div>
-          <div className="stat-grid">
-            <Stat
-              label="Artículos controlados"
-              value={data.articles.length}
-              note="Catálogo maestro activo"
+
+          <form
+            className="dashboard-filters"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const normalized =
+                dashboardDraft.start <= dashboardDraft.end
+                  ? dashboardDraft
+                  : {
+                      ...dashboardDraft,
+                      start: dashboardDraft.end,
+                      end: dashboardDraft.start,
+                    };
+              setDashboardDraft(normalized);
+              setDashboardFilters(normalized);
+              setDismissedAlert("");
+            }}
+          >
+            <label className="date-filter">
+              Rango de actividad
+              <span>
+                <CalendarDays size={14} />
+                <input
+                  aria-label="Fecha inicial del dashboard"
+                  type="date"
+                  value={dashboardDraft.start}
+                  onChange={(event) =>
+                    setDashboardDraft({
+                      ...dashboardDraft,
+                      start: event.target.value,
+                    })
+                  }
+                />
+                <b>–</b>
+                <input
+                  aria-label="Fecha final del dashboard"
+                  type="date"
+                  value={dashboardDraft.end}
+                  onChange={(event) =>
+                    setDashboardDraft({
+                      ...dashboardDraft,
+                      end: event.target.value,
+                    })
+                  }
+                />
+              </span>
+            </label>
+            <label>
+              Planta
+              <select
+                aria-label="Filtrar por planta"
+                value={dashboardDraft.plant}
+                onChange={(event) =>
+                  setDashboardDraft({
+                    ...dashboardDraft,
+                    plant: event.target.value,
+                    warehouse: "Todos",
+                  })
+                }
+              >
+                <option value="Todas">Todas las plantas</option>
+                {dashboardPlants.map((plant) => (
+                  <option key={plant} value={plant}>
+                    {plant}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Almacén
+              <select
+                aria-label="Filtrar por almacén"
+                value={dashboardDraft.warehouse}
+                onChange={(event) =>
+                  setDashboardDraft({
+                    ...dashboardDraft,
+                    warehouse: event.target.value,
+                  })
+                }
+              >
+                <option value="Todos">Todos los almacenes</option>
+                {(data.warehouses || [])
+                  .filter(
+                    (warehouse: Row) =>
+                      dashboardDraft.plant === "Todas" ||
+                      warehouse.center === dashboardDraft.plant,
+                  )
+                  .map((warehouse: Row) => (
+                    <option key={warehouse.id} value={warehouse.id}>
+                      {warehouse.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label>
+              Categoría
+              <select
+                aria-label="Filtrar por categoría"
+                value={dashboardDraft.category}
+                onChange={(event) =>
+                  setDashboardDraft({
+                    ...dashboardDraft,
+                    category: event.target.value,
+                  })
+                }
+              >
+                <option value="Todas">Todas las categorías</option>
+                {[...new Set(data.articles.map((row: Row) => row.category))].map(
+                  (item: any) => (
+                    <option key={item}>{item}</option>
+                  ),
+                )}
+              </select>
+            </label>
+            <label className="dashboard-search-filter">
+              SKU
+              <span>
+                <Search size={14} />
+                <input
+                  aria-label="Buscar SKU o producto"
+                  placeholder="Buscar SKU o producto"
+                  value={dashboardDraft.sku}
+                  onChange={(event) =>
+                    setDashboardDraft({
+                      ...dashboardDraft,
+                      sku: event.target.value,
+                    })
+                  }
+                />
+              </span>
+            </label>
+            <button className="dashboard-apply" type="submit">
+              Aplicar
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const reset = initialDashboardFilters();
+                setDashboardDraft(reset);
+                setDashboardFilters(reset);
+                setDismissedAlert("");
+              }}
+            >
+              Limpiar
+            </button>
+            <button
+              className="dashboard-reset"
+              type="button"
+              onClick={() => {
+                const reset = initialDashboardFilters();
+                setDashboardDraft(reset);
+                setDashboardFilters(reset);
+                setDismissedAlert("");
+              }}
+            >
+              <RefreshCw size={13} /> Restablecer
+            </button>
+          </form>
+
+          {dashboardAlert && dismissedAlert !== dashboardAlert.key && (
+            <section
+              className={`dashboard-alert ${dashboardAlert.level}`}
+              role="alert"
+            >
+              <span className="dashboard-alert-icon">
+                <Bell size={18} />
+              </span>
+              <div>
+                <strong>ATENCIÓN · {dashboardAlert.title}</strong>
+                <p>{dashboardAlert.detail}</p>
+              </div>
+              <span className="dashboard-alert-gap">{dashboardAlert.gap}</span>
+              <span className="dashboard-alert-priority">
+                {dashboardAlert.level === "critical"
+                  ? "PRIORIDAD ALTA"
+                  : "PRIORIDAD MEDIA"}
+              </span>
+              <button onClick={() => navigate(dashboardAlert.page)}>
+                {dashboardAlert.action}
+              </button>
+              <button
+                className="dashboard-alert-close"
+                aria-label="Ocultar alerta"
+                onClick={() => setDismissedAlert(dashboardAlert.key)}
+              >
+                <X size={15} />
+              </button>
+            </section>
+          )}
+
+          <div className="dashboard-kpis">
+            <DashboardKpi
+              label="Unidades afectadas"
+              value={percent(affectedUnitsPct)}
+              goal="Meta ≤ 5%"
+              comparison={`${points(affectedUnitsPct - 5)} vs. meta`}
+              status={affectedUnitsPct <= 5 ? "good" : "warning"}
               icon={Package}
+              progress={Math.min(100, (affectedUnitsPct / 5) * 100)}
+              inverse
             />
-            <Stat
-              label="Lotes con retención"
-              value={held.length}
-              note="Calidad o vencimiento"
-              icon={ShieldCheck}
-              amber
+            <DashboardKpi
+              label="Disponibilidad ATP"
+              value={percent(atpPct)}
+              goal="Meta ≥ 90%"
+              comparison={`${points(atpPct - 90)} vs. meta`}
+              status={atpPct >= 90 ? "good" : "warning"}
+              icon={Boxes}
+              progress={atpPct}
+              target={90}
             />
-            <Stat
-              label="Bajo punto de reorden"
-              value={low.length}
-              note="Disponible + compras confirmadas"
+            <DashboardKpi
+              label="SKU que requieren reposición"
+              value={`${dashboardLow.length} de ${dashboardPlanning.length}`}
+              secondary={`SKU · ${percent(lowPct)}`}
+              goal="Meta ≤ 10% de SKU evaluados"
+              comparison={`${points(lowPct - 10)} vs. meta`}
+              status={lowPct <= 10 ? "good" : "warning"}
               icon={Activity}
-              amber
+              progress={Math.min(100, lowPct)}
+              target={10}
+              inverse
             />
-            <Stat
-              label="Pedidos por preparar"
-              value={
-                data.documents.filter(
-                  (r: Row) => r.kind === "PEDIDO" && r.status === "PENDIENTE",
-                ).length
-              }
-              note="Listos para validar disponibilidad"
-              icon={Truck}
+            <DashboardKpi
+              label="Exactitud del inventario"
+              value={percent(accuracyPct)}
+              goal="Meta ≥ 95%"
+              comparison={`${points(accuracyPct - 95)} vs. meta`}
+              status={accuracyPct >= 95 ? "good" : "warning"}
+              icon={ShieldCheck}
+              progress={accuracyPct}
+              target={95}
+            />
+            <DashboardKpi
+              label="Cumplimiento FEFO"
+              value={percent(fefoPct, 0)}
+              goal="Meta ≥ 95%"
+              comparison={`${points(fefoPct - 95)} vs. meta`}
+              status={fefoPct >= 95 ? "good" : "warning"}
+              icon={CheckCircle2}
+              progress={fefoPct}
+              target={95}
             />
           </div>
-          <div className="dashboard-grid">
-            <section className="panel">
-              <div className="panel-heading">
+
+          <div className="dashboard-analytics">
+            <section
+              className={`dashboard-card dashboard-trend-card ${expandedPanel === "trend" ? "expanded" : ""}`}
+            >
+              <div className="dashboard-card-heading">
                 <div>
-                  <h3>Disponibilidad por artículo</h3>
-                  <p>Cada artículo conserva su propia unidad de medida.</p>
+                  <h3>Evolución de indicadores</h3>
+                  <p>
+                    {date(dashboardFilters.start)} – {date(dashboardFilters.end)}
+                    {' · '}porcentaje de cumplimiento
+                  </p>
                 </div>
-                <button
-                  className="text-link"
-                  onClick={() => navigate("Existencias")}
-                >
-                  Ver inventario <ArrowUpRight size={15} />
-                </button>
+                <div className="dashboard-card-meta">
+                  <div className="chart-legend">
+                    <span><i className="legend-atp" /> ATP</span>
+                    <span><i className="legend-accuracy" /> Exactitud</span>
+                    <span><i className="legend-fefo" /> FEFO</span>
+                    <span><i className="legend-target" /> Metas 90% / 95%</span>
+                  </div>
+                  <button
+                    className="dashboard-detail-link"
+                    onClick={() => navigate("Indicadores")}
+                  >
+                    Ver detalle
+                  </button>
+                  <button
+                    className="dashboard-expand-button"
+                    aria-label={expandedPanel === "trend" ? "Restaurar gráfica" : "Ampliar gráfica"}
+                    onClick={() =>
+                      setExpandedPanel(expandedPanel === "trend" ? "" : "trend")
+                    }
+                  >
+                    {expandedPanel === "trend" ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                  </button>
+                </div>
               </div>
-              <div className="bars">
-                {data.planning.map((a: Row) => (
-                  <div className="bar-row" key={a.id}>
+              <DashboardTrend points={trendPoints} />
+              <small className="dashboard-chart-note">
+                ATP se reconstruye con movimientos confirmados; exactitud usa
+                conteos aprobados y FEFO, reservas históricas. Metas: ATP 90%;
+                exactitud y FEFO 95%.
+              </small>
+            </section>
+
+            <section
+              className={`dashboard-card dashboard-risk-card ${expandedPanel === "risk" ? "expanded" : ""}`}
+            >
+              <div className="dashboard-card-heading">
+                <div>
+                  <h3>Riesgo por almacén</h3>
+                  <p>Situación actual de los almacenes seleccionados.</p>
+                </div>
+                <div className="dashboard-card-meta">
+                  <button
+                    className="dashboard-detail-link"
+                    onClick={() => navigate("Punto de reorden")}
+                  >
+                    Ver detalle <ArrowUpRight size={13} />
+                  </button>
+                  <button
+                    className="dashboard-expand-button"
+                    aria-label={expandedPanel === "risk" ? "Restaurar riesgo por almacén" : "Ampliar riesgo por almacén"}
+                    onClick={() =>
+                      setExpandedPanel(expandedPanel === "risk" ? "" : "risk")
+                    }
+                  >
+                    {expandedPanel === "risk" ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                  </button>
+                </div>
+              </div>
+              <div className="risk-legend">
+                <span><i className="risk-rop" /> Bajo ROP / evaluados</span>
+                <span><i className="risk-affected" /> Brecha hasta ROP (u.)</span>
+              </div>
+              <div className="risk-bars">
+                {dashboardRisk.map((row: Row) => (
+                  <div className="risk-row" key={row.id}>
+                    <strong>{row.name}</strong>
                     <div>
-                      <strong>{a.name}</strong>
-                      <small>
-                        {a.id} · {a.unit}
-                      </small>
-                    </div>
-                    <div className="bar-track">
                       <span
+                        className="risk-rop"
                         style={{
-                          width:
-                            Math.min(
-                              100,
-                              (Number(a.available) /
-                                Math.max(
-                                  Number(a.rop) * 2,
-                                  Number(a.available),
-                                  1,
-                                )) *
-                                100,
-                            ) + "%",
+                          width: `${row.riskPct}%`,
                         }}
                       />
                     </div>
-                    <strong>{fmt(a.available)}</strong>
+                    <b title={`${row.belowRop} SKU bajo ROP de ${row.evaluated} evaluados`}>
+                      {row.belowRop}/{row.evaluated}
+                    </b>
+                    <div>
+                      <span
+                        className="risk-affected"
+                        style={{
+                          width: `${(row.gap / dashboardRiskGapMax) * 100}%`,
+                        }}
+                      />
+                    </div>
+                    <b>{fmt(row.gap)}</b>
                   </div>
                 ))}
+                {!dashboardRisk.length && (
+                  <div className="dashboard-empty">Sin almacenes para los filtros aplicados.</div>
+                )}
               </div>
-            </section>
-            <section className="panel attention">
-              <div className="panel-heading">
-                <h3>Requieren atención</h3>
-                <Bell size={18} />
-              </div>
-              <button onClick={() => navigate("Lotes pendientes")}>
-                <span className="alert-icon amber-bg">
-                  <ShieldCheck size={18} />
-                </span>
-                <span>
-                  <strong>{held.length} lotes no elegibles</strong>
-                  <small>Revisa calidad y vencimientos</small>
-                </span>
-                <ChevronRight size={16} />
-              </button>
-              <button onClick={() => navigate("Punto de reorden")}>
-                <span className="alert-icon blue-bg">
-                  <ShoppingCart size={18} />
-                </span>
-                <span>
-                  <strong>{low.length} artículos para reposición</strong>
-                  <small>Evita quiebres de stock</small>
-                </span>
-                <ChevronRight size={16} />
-              </button>
-              <div className="demo-note">
-                <span className="live-dot" />
-                Entorno académico
-                <br />
-                <small>Datos ficticios · integraciones simuladas</small>
-              </div>
+              <small className="dashboard-chart-note">
+                Bajo ROP es una alerta: ATP local ≤ punto de reorden. En las posiciones
+                SKU–almacén evaluadas hay {dashboardRiskBelowTotal} críticas de {dashboardRiskEvaluatedTotal};
+                faltan {fmt(dashboardRiskGapTotal)} unidades para alcanzar sus ROP.
+              </small>
             </section>
           </div>
-          <section className="panel">
-            <div className="panel-heading">
+
+          <section
+            className={`dashboard-card dashboard-priorities ${expandedPanel === "priorities" ? "expanded" : ""}`}
+          >
+            <div className="dashboard-card-heading">
               <div>
-                <h3>Existencias operativas</h3>
-                <p>Visibilidad por artículo, lote, ubicación y estado.</p>
+                <h3>Inventario y acciones prioritarias</h3>
+                <p>
+                  {dashboardInventory.length} posiciones · {dashboardLow.length} SKU bajo ROP
+                </p>
               </div>
-              {btn("Abrir inventario", () => navigate("Existencias"))}
+              <div className="dashboard-card-meta">
+                <span className="dashboard-order"><Filter size={13} /> Orden: criticidad</span>
+                <button
+                  className="dashboard-expand-button"
+                  aria-label={expandedPanel === "priorities" ? "Restaurar tabla" : "Ampliar tabla"}
+                  onClick={() =>
+                    setExpandedPanel(
+                      expandedPanel === "priorities" ? "" : "priorities",
+                    )
+                  }
+                >
+                  {expandedPanel === "priorities" ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                </button>
+              </div>
             </div>
-            {inventoryTable()}
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>SKU</th>
+                    <th>Producto</th>
+                    <th>Almacén</th>
+                    <th>Stock físico</th>
+                    <th>ATP</th>
+                    <th>ROP</th>
+                    <th>Lote próximo a vencer</th>
+                    <th>Estado</th>
+                    <th>Acción</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dashboardRows.map((row) => (
+                    <tr
+                      key={`${row.lot_id}-${row.location_id}`}
+                      className={row.severity === 2 ? "dashboard-critical-row" : ""}
+                    >
+                      <td><strong>{row.article_id}</strong></td>
+                      <td>
+                        <strong>{row.article?.name || row.article}</strong>
+                        <small>{row.unit}</small>
+                      </td>
+                      <td>{warehouseById.get(row.warehouse_id)?.name || row.warehouse_id}</td>
+                      <td>{fmt(row.physical)}</td>
+                      <td className={number(row.available) <= 0 ? "metric-danger" : ""}>
+                        <strong>{fmt(row.available)}</strong>
+                      </td>
+                      <td>{fmt(row.rop)}</td>
+                      <td>
+                        <strong>{row.lot_id}</strong>
+                        <small>
+                          {row.expiry
+                            ? `${date(row.expiry)} · ${row.daysToExpiry} días`
+                            : "Sin vencimiento"}
+                        </small>
+                      </td>
+                      <td>
+                        <span className={`dashboard-status severity-${row.severity}`}>
+                          {row.statusText}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="dashboard-row-actions">
+                          <button
+                            onClick={() =>
+                              setDetail(
+                                lotRows.find((lot: Row) => lot.lot_id === row.lot_id) || row,
+                              )
+                            }
+                          >
+                            Ver detalle
+                          </button>
+                          {row.severity > 0 ? (
+                            <button
+                              className="dashboard-recommendation"
+                              onClick={() => navigate(row.actionPage)}
+                            >
+                              {row.actionLabel}
+                            </button>
+                          ) : (
+                            <span>Sin acción requerida</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!dashboardRows.length && (
+                    <tr>
+                      <td colSpan={9} className="dashboard-empty">
+                        No hay inventario para los filtros aplicados.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </section>
-        </>
+
+          <div className="dashboard-method-note">
+            Datos del prototipo · métricas calculadas desde artículos, lotes,
+            ubicaciones, saldos, reservas y movimientos sin duplicar el dato
+            maestro.
+          </div>
+        </div>
       );
     if (page === "Existencias")
       return (
@@ -1290,18 +2430,30 @@ function App() {
           <div className="notice-strip">
             <ShieldCheck size={17} />
             <span>
-              Solo los lotes <b>liberados y no vencidos</b> son elegibles. La
-              reserva no descuenta existencia física.
+              <b>Existencias = saldos por ubicación.</b> Cada fila muestra un
+              lote en una ubicación concreta. Si el mismo lote está en dos
+              ubicaciones, aquí aparece dos veces.
+              <small>
+                Ejemplo: PT-2601 identifica una partida o lote; PT-A1 y CD-A1
+                identifican posiciones internas. Solo los lotes liberados y no
+                vencidos aportan ATP.
+              </small>
             </span>
           </div>
           <div className="filters">
             <label>
-              Almacén
-              <select value={wh} onChange={(e) => setWh(e.target.value)}>
-                <option>Todos</option>
-                {data.warehouses.map((r: Row) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name}
+              Planta o centro operativo
+              <select
+                value={plantFilter}
+                onChange={(event) => {
+                  setPlantFilter(event.target.value);
+                  setWh("Todos");
+                }}
+              >
+                <option value="Todas">Todas las plantas</option>
+                {(data.warehouses || []).map((warehouse: Row) => (
+                  <option key={warehouse.id} value={warehouse.id}>
+                    {warehouse.name}{warehouse.center ? ` — ${warehouse.center}` : ""}
                   </option>
                 ))}
               </select>
@@ -1324,7 +2476,7 @@ function App() {
               </select>
             </label>
             <span className="muted">
-              {filtered.length} posiciones de inventario
+              {filtered.length} posiciones · {new Set(filtered.map((row: Row) => row.lot_id)).size} lotes · {new Set(filtered.map((row: Row) => row.article_id)).size} SKU
             </span>
           </div>
           <section className="panel">
@@ -1359,19 +2511,29 @@ function App() {
           <div className="notice-strip">
             <Layers3 size={17} />
             <span>
-              Cada fila identifica <b>un lote único</b>, aunque esté repartido
-              entre varias ubicaciones. Aquí se controla su origen, vigencia,
-              calidad y trazabilidad.
+              <b>Lotes = identidad y trazabilidad de la partida.</b> Cada fila
+              identifica un lote único, aunque esté repartido entre varias
+              ubicaciones; sus cantidades se consolidan aquí.
+              <small>
+                Ejemplo: PT-2601 permanece como un solo lote aunque una parte
+                esté en Producto terminado A1 y otra en Distribución A1.
+              </small>
             </span>
           </div>
           <div className="filters">
             <label>
-              Almacén con existencia
-              <select value={wh} onChange={(e) => setWh(e.target.value)}>
-                <option>Todos</option>
-                {data.warehouses.map((r: Row) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name}
+              Planta o centro operativo
+              <select
+                value={plantFilter}
+                onChange={(event) => {
+                  setPlantFilter(event.target.value);
+                  setWh("Todos");
+                }}
+              >
+                <option value="Todas">Todas las plantas</option>
+                {(data.warehouses || []).map((warehouse: Row) => (
+                  <option key={warehouse.id} value={warehouse.id}>
+                    {warehouse.name}{warehouse.center ? ` — ${warehouse.center}` : ""}
                   </option>
                 ))}
               </select>
@@ -1394,7 +2556,7 @@ function App() {
               </select>
             </label>
             <span className="muted">
-              {filteredLots.length} lotes identificados
+              {filteredLots.length} lotes · {filteredLots.reduce((total: number, row: Row) => total + number(row.position_count), 0)} posiciones · {new Set(filteredLots.map((row: Row) => row.article_id)).size} SKU
             </span>
           </div>
           <section className="panel">
@@ -1403,7 +2565,8 @@ function App() {
                 <h3>Maestro operativo de lotes</h3>
                 <p>
                   Una fila por lote; el total físico agrega sus posiciones sin
-                  perder la separación por artículo.
+                  perder la separación por artículo. Un lote puede aparecer en
+                  varias ubicaciones sin convertirse en varios lotes.
                 </p>
               </div>
               <div className="summary-pills">
@@ -1631,83 +2794,195 @@ function App() {
           </section>
         </>
       );
-    if (page === "Punto de reorden" || page === "Indicadores")
+    if (page === "Punto de reorden" || page === "Indicadores") {
+      const replenishmentRows = (data.planning || [])
+        .map((row: Row) => {
+          const available = number(row.available);
+          const incoming = number(row.incoming);
+          const rop = number(row.rop);
+          const position = available + incoming;
+          const noAtp = available <= 0;
+          const underRop = position <= rop;
+          const gap = Math.max(0, rop - position);
+          const suggestion = (data.suggestions || []).find(
+            (item: Row) => item.article_id === row.id && item.status === "ABIERTA",
+          );
+          const recommendation =
+            noAtp && !underRop && incoming > 0
+              ? "Acelerar la recepción confirmada"
+              : noAtp && underRop
+                ? "Priorizar compra y recuperar ATP"
+                : underRop
+                  ? "Generar sugerencia de reposición"
+                  : "Sin acción requerida";
+          return {
+            ...row,
+            available,
+            incoming,
+            position,
+            gap,
+            noAtp,
+            underRop,
+            suggestion,
+            recommendation,
+            priority: noAtp ? 2 : underRop ? 1 : 0,
+          };
+        })
+        .sort(
+          (a: Row, b: Row) =>
+            b.priority - a.priority || b.gap - a.gap || a.name.localeCompare(b.name),
+        );
+      const noAtpCount = replenishmentRows.filter((row: Row) => row.noAtp).length;
+      const lowWithAtpCount = replenishmentRows.filter(
+        (row: Row) => row.underRop && !row.noAtp,
+      ).length;
+      const underRopCount = replenishmentRows.filter((row: Row) => row.underRop).length;
+      const coveredCount = replenishmentRows.filter(
+        (row: Row) => !row.noAtp && !row.underRop,
+      ).length;
+      const attentionCount = replenishmentRows.filter(
+        (row: Row) => row.noAtp || row.underRop,
+      ).length;
+      const visibleRows = replenishmentRows.filter((row: Row) => {
+        if (replenishmentView === "no-atp") return row.noAtp;
+        if (replenishmentView === "low-rop") return row.underRop && !row.noAtp;
+        if (replenishmentView === "covered") return !row.noAtp && !row.underRop;
+        if (replenishmentView === "all") return true;
+        return row.noAtp || row.underRop;
+      });
+      const openSuggestions = (data.suggestions || []).filter(
+        (row: Row) => row.status === "ABIERTA",
+      );
       return (
         <>
-          <div className="formula-card">
+          <section className="rop-action-banner">
+            <div className="rop-action-icon"><Activity size={22} /></div>
             <div>
-              <span className="eyebrow">REPOSICIÓN CONTINUA</span>
-              <h2>ROP = demanda diaria × plazo + seguridad</h2>
+              <span className="eyebrow">ACCIÓN REQUERIDA</span>
+              <h2>{attentionCount} artículos requieren intervención</h2>
               <p>
-                Se compara con disponible + compras confirmadas pendientes.
-                Evaluar no crea órdenes automáticamente.
+                {noAtpCount} sin ATP y {lowWithAtpCount} con ATP pero bajo ROP.
+                Atiende primero la falta inmediata y luego recupera la cobertura.
               </p>
             </div>
-            <Activity size={40} />
+            {can("compras") &&
+              btn("Evaluar y generar sugerencias", () =>
+                send("replenishment.evaluate", { id: reference("ROP") }),
+                true,
+              )}
+          </section>
+
+          <div className="rop-kpis">
+            <article className="rop-kpi critical">
+              <span>Sin ATP</span><strong>{noAtpCount}</strong>
+              <small>Disponibilidad prometible igual a cero</small>
+            </article>
+            <article className="rop-kpi warning">
+              <span>Bajo ROP</span><strong>{underRopCount}</strong>
+              <small>Posición ≤ punto de reorden; incluye los sin ATP</small>
+            </article>
+            <article className="rop-kpi neutral">
+              <span>Sugerencias abiertas</span><strong>{openSuggestions.length}</strong>
+              <small>Recomendaciones pendientes de decisión de Compras</small>
+            </article>
+            <article className="rop-kpi good">
+              <span>Cubiertos</span><strong>{coveredCount}</strong>
+              <small>ATP disponible y posición por encima del ROP</small>
+            </article>
           </div>
-          <section className="panel">
-            {table(data.planning, [
-              { key: "name", label: "Artículo" },
-              { key: "unit", label: "Unidad" },
-              {
-                key: "daily_demand",
-                label: "Demanda/día",
-                render: (r) => fmt(r.daily_demand),
-              },
-              { key: "lead_days", label: "Plazo (días)" },
-              {
-                key: "safety_stock",
-                label: "Seguridad",
-                render: (r) => fmt(r.safety_stock),
-              },
-              {
-                key: "rop",
-                label: "Punto de reorden",
-                render: (r) => <strong>{fmt(r.rop)}</strong>,
-              },
-              {
-                key: "available",
-                label: "Disponible",
-                render: (r) => fmt(r.available),
-              },
-              {
-                key: "incoming",
-                label: "Por recibir",
-                render: (r) => fmt(r.incoming),
-              },
-              {
-                key: "signal",
-                label: "Señal",
-                render: (r) => (
-                  <Badge
-                    value={
-                      Number(r.available) + Number(r.incoming) <= Number(r.rop)
-                        ? "REPONER"
-                        : "CUBIERTO"
-                    }
-                  />
-                ),
-              },
-            ])}
-          </section>
-          <section className="panel">
-            <div className="panel-heading">
-              <h3>Sugerencias de reposición</h3>
-              {can("compras") &&
-                btn("Evaluar inventario", () =>
-                  send("replenishment.evaluate", { id: reference("ROP") }),
-                )}
+
+          <section className="panel rop-panel">
+            <div className="panel-heading rop-heading">
+              <div>
+                <h3>Prioridades de reposición</h3>
+                <p>Ordenadas por urgencia y brecha. La vista inicial oculta lo cubierto.</p>
+              </div>
+              <div className="rop-status-guide">
+                <span className="critical">Sin ATP: urgencia inmediata</span>
+                <span className="warning">Bajo ROP: recuperar cobertura</span>
+                <span className="good">Cubierto: sin acción</span>
+              </div>
             </div>
-            {generic(data.suggestions, [
-              "article_id",
-              "position",
-              "rop",
-              "status",
-              "version",
-            ])}
+            <div className="tabs rop-tabs">
+              {[
+                ["attention", `Atención requerida (${attentionCount})`],
+                ["no-atp", `Sin ATP (${noAtpCount})`],
+                ["low-rop", `Bajo ROP con ATP (${lowWithAtpCount})`],
+                ["covered", `Cubiertos (${coveredCount})`],
+                ["all", `Todos (${replenishmentRows.length})`],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  className={replenishmentView === value ? "active" : ""}
+                  onClick={() => setReplenishmentView(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {table(
+              visibleRows,
+              [
+                {
+                  key: "name",
+                  label: "Artículo / SKU",
+                  render: (r) => <><strong>{r.name}</strong><small>{r.id} · {r.unit}</small></>,
+                },
+                { key: "available", label: "ATP", render: (r) => <strong>{fmt(r.available)}</strong> },
+                { key: "incoming", label: "Por recibir", render: (r) => fmt(r.incoming) },
+                { key: "position", label: "Posición", render: (r) => fmt(r.position) },
+                { key: "rop", label: "ROP", render: (r) => <strong>{fmt(r.rop)}</strong> },
+                {
+                  key: "gap",
+                  label: "Brecha",
+                  render: (r) => <span className={r.gap > 0 ? "metric-danger" : ""}>{fmt(r.gap)}</span>,
+                },
+                {
+                  key: "state",
+                  label: "Diagnóstico",
+                  render: (r) => (
+                    <div className="rop-diagnosis">
+                      <span className={r.noAtp ? "critical" : "good"}>
+                        {r.noAtp ? "SIN ATP" : "ATP DISPONIBLE"}
+                      </span>
+                      <span className={r.underRop ? "warning" : "good"}>
+                        {r.underRop ? "BAJO ROP" : "CUBIERTO"}
+                      </span>
+                    </div>
+                  ),
+                },
+                { key: "recommendation", label: "Acción recomendada" },
+              ],
+              (r) =>
+                r.noAtp && !r.underRop && r.incoming > 0 ? (
+                  compact("Revisar recepción", () => navigate("Órdenes de compra"))
+                ) : r.underRop && r.suggestion ? (
+                  compact("Preparar solicitud", () => prepareReplenishmentRequest(r))
+                ) : r.underRop && can("compras") ? (
+                  compact("Generar sugerencia", () =>
+                    send("replenishment.evaluate", {
+                      id: reference("ROP"),
+                      articleId: r.id,
+                    }),
+                  )
+                ) : (
+                  <span className="rop-no-action">Sin acción</span>
+                ),
+            )}
           </section>
+
+          <details className="rop-method">
+            <summary>Cómo se calcula y por qué ATP no es lo mismo que ROP</summary>
+            <div>
+              <p><strong>ATP</strong> es la cantidad libre que puede prometerse hoy.</p>
+              <p><strong>Posición</strong> = ATP + compras confirmadas pendientes.</p>
+              <p><strong>ROP</strong> = demanda diaria × plazo + stock de seguridad.</p>
+              <p>Sin ATP exige recuperar disponibilidad inmediata. Bajo ROP exige reponer. Si una compra confirmada cubre el ROP, no se duplica la compra: se acelera su recepción.</p>
+            </div>
+          </details>
         </>
       );
+    }
     if (page === "Conciliación")
       return (
         <>
@@ -1903,15 +3178,8 @@ function App() {
         className={"sidebar " + (mobile ? "visible" : "")}
       >
         <div className="brand">
-          <div className="brand-mark">
-            CBN<span>•</span>
-          </div>
-          <div>
-            <strong>
-              CBN <b>ERP</b>
-            </strong>
-            <small>INVENTARIO & OPERACIONES</small>
-          </div>
+          <CbnBrand product="ERP" />
+          <small>INVENTARIO & OPERACIONES</small>
         </div>
         <div className="workspace">
           <span className="live-dot" />
@@ -2171,6 +3439,174 @@ function App() {
     </div>
   );
 }
+function DashboardKpi({
+  label,
+  value,
+  secondary,
+  goal,
+  comparison,
+  status,
+  icon: Icon,
+  progress,
+  target = 100,
+}: any) {
+  const boundedProgress = Math.max(0, Math.min(100, number(progress)));
+  const boundedTarget = Math.max(1.5, Math.min(98.5, number(target)));
+  return (
+    <article className={`dashboard-kpi ${status}`}>
+      <div className="dashboard-kpi-label">
+        <span>{label}</span>
+        <Icon size={16} />
+      </div>
+      <div className="dashboard-kpi-value">
+        {value} {secondary && <small>{secondary}</small>}
+      </div>
+      <div className="dashboard-kpi-context">
+        <span>{goal}</span>
+        <span className={`dashboard-kpi-chip ${status}`}>
+          {status === "good" ? <CheckCircle2 size={11} /> : <Clock3 size={11} />}
+          {status === "good" ? "Cumple" : "Atención"}
+        </span>
+      </div>
+      <div className="dashboard-kpi-track" aria-hidden="true">
+        <span style={{ width: `${boundedProgress}%` }} />
+        <i style={{ left: `${boundedTarget}%` }} />
+      </div>
+      <small className="dashboard-kpi-comparison">{comparison}</small>
+    </article>
+  );
+}
+function DashboardTrend({
+  points,
+}: {
+  points: {
+    label: string;
+    atp: number | null;
+    accuracy: number | null;
+    fefo: number | null;
+  }[];
+}) {
+  const width = 640;
+  const height = 176;
+  const left = 42;
+  const right = 54;
+  const top = 14;
+  const bottom = 32;
+  const chartWidth = width - left - right;
+  const chartHeight = height - top - bottom;
+  const min = 80;
+  const max = 100;
+  const y = (value: number) =>
+    top + ((max - Math.max(min, Math.min(max, value))) / (max - min)) * chartHeight;
+  const x = (index: number) =>
+    left + (chartWidth * index) / Math.max(1, points.length - 1);
+  type Metric = "atp" | "accuracy" | "fefo";
+  const series = (metric: Metric) =>
+    points
+      .map((point, index) => ({
+        label: point.label,
+        value: point[metric],
+        index,
+      }))
+      .filter(
+        (point): point is { label: string; value: number; index: number } =>
+          typeof point.value === "number" && Number.isFinite(point.value),
+      );
+  const path = (metric: Metric) =>
+    series(metric)
+      .map((point, index) =>
+        `${index === 0 ? "M" : "L"}${x(point.index).toFixed(1)},${y(point.value).toFixed(1)}`,
+      )
+      .join(" ");
+  const metrics: { key: Metric; label: string; offset: number }[] = [
+    { key: "atp", label: "ATP", offset: 3 },
+    { key: "accuracy", label: "Exact.", offset: -7 },
+    { key: "fefo", label: "FEFO", offset: 14 },
+  ];
+  const hasData = metrics.some(({ key }) => series(key).length > 0);
+  return (
+    <div className="dashboard-trend">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="Evolución de ATP, exactitud del inventario y cumplimiento FEFO frente a sus metas"
+      >
+        {[80, 85, 90, 95, 100].map((tick) => (
+          <g key={tick}>
+            <line
+              x1={left}
+              y1={y(tick)}
+              x2={width - right}
+              y2={y(tick)}
+              className="trend-grid-line"
+            />
+            <text x={left - 9} y={y(tick) + 3} textAnchor="end" className="trend-axis-label">
+              {tick}%
+            </text>
+          </g>
+        ))}
+        <line
+          x1={left}
+          y1={y(90)}
+          x2={width - right}
+          y2={y(90)}
+          className="trend-target-line target-atp"
+        />
+        <line
+          x1={left}
+          y1={y(95)}
+          x2={width - right}
+          y2={y(95)}
+          className="trend-target-line target-quality"
+        />
+        {metrics.map(({ key, label, offset }) => {
+          const valid = series(key);
+          const last = valid[valid.length - 1];
+          const line = path(key);
+          return (
+            <g key={key}>
+              {line && <path d={line} className={`trend-series trend-${key}-line`} />}
+              {valid.map((point) => (
+                <circle
+                  key={`${key}-${point.label}-${point.index}`}
+                  cx={x(point.index)}
+                  cy={y(point.value)}
+                  r={point.index === last?.index ? 3.2 : 2}
+                  className={`trend-series-point trend-${key}-point`}
+                />
+              ))}
+              {last && (
+                <text
+                  x={width - right + 7}
+                  y={y(last.value) + offset}
+                  className={`trend-end-label trend-${key}-label`}
+                >
+                  {label} {percent(last.value, 1)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+        {points.map((point, index) => (
+          <text
+            key={`${point.label}-${index}`}
+            x={x(index)}
+            y={height - 8}
+            textAnchor="middle"
+            className="trend-axis-label"
+          >
+            {point.label}
+          </text>
+        ))}
+        {!hasData && (
+          <text x={width / 2} y={height / 2} textAnchor="middle" className="trend-empty-label">
+            No hay movimientos confirmados en este rango
+          </text>
+        )}
+      </svg>
+    </div>
+  );
+}
 function Stat({ label, value, note, icon: Icon, amber = false }: any) {
   return (
     <div className="stat">
@@ -2210,6 +3646,23 @@ function Modal({
         <span className="eyebrow">OPERACIÓN DEL ERP</span>
         <h2>{dialog.title}</h2>
         <p>{dialog.description}</p>
+        {dialog.insights && (
+          <div className="modal-insights">
+            {dialog.insights.map((insight) => (
+              <div key={insight.label} className={insight.tone || ""}>
+                <span>{insight.label}</span>
+                <strong>{insight.value}</strong>
+                {insight.note && <small>{insight.note}</small>}
+              </div>
+            ))}
+          </div>
+        )}
+        {dialog.warning && (
+          <div className="modal-warning">
+            <Clock3 size={16} />
+            <span>{dialog.warning}</span>
+          </div>
+        )}
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -2239,13 +3692,15 @@ function Modal({
                     type={f.type || "text"}
                     defaultValue={f.value ?? ""}
                     step={f.type === "number" ? "0.001" : undefined}
-                    min={f.type === "number" ? 0 : undefined}
+                    min={f.type === "number" ? (f.min ?? 0) : undefined}
+                    max={f.type === "number" ? f.max : undefined}
                     required={!f.optional}
                     autoComplete={
                       f.type === "password" ? "new-password" : "off"
                     }
                   />
                 )}
+                {f.hint && <small className="field-hint">{f.hint}</small>}
               </label>
             ))}
           </div>
@@ -2260,8 +3715,12 @@ function Modal({
             <button type="button" onClick={close} disabled={busy}>
               Cancelar
             </button>
-            <button className="primary" disabled={busy}>
-              {busy ? "Validando…" : "Confirmar operación"}
+            <button className="primary" disabled={busy || dialog.blocked}>
+              {busy
+                ? "Validando…"
+                : dialog.blocked
+                  ? "ATP insuficiente en este almacén"
+                  : "Confirmar operación"}
               <ArrowRight size={16} />
             </button>
           </div>
@@ -2277,9 +3736,7 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
     <div className="login">
       <div className="login-story">
         <div className="brand">
-          <div className="brand-mark">
-            CBN<span>•</span>
-          </div>
+          <CbnBrand />
           <strong>ERP · INVENTARIO</strong>
         </div>
         <div>
