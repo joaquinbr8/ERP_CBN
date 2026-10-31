@@ -171,6 +171,65 @@ async function ensureDashboardDemo(c: any) {
       [randomUUID(), document, row.lot, row.location, row.reserved],
     );
   }
+  // Scenario design for the executive dashboard:
+  // - El Alto: enough ATP/ROP but a material count difference.
+  // - Huari: units retained by Quality while ATP and ROP still comply.
+  // - Santa Cruz: ATP pressure caused by reservations, not by Quality.
+  // These extra lots preserve the same master articles and keep the model in 3NF.
+  const supplementalLots = [
+    ["EA-PAC-COV", "PAC-0350", "EA-PT-01", 500, "LIBERADO", 110],
+    ["EA-BOC-COV", "BOC-0620", "EA-PT-01", 400, "LIBERADO", 125],
+    ["HU-COV-01", "HUA-0620", "HU-PT-01", 520, "LIBERADO", 105],
+    ["HU-QA-01", "HUA-0620", "HU-PT-01", 60, "CUARENTENA", 140],
+    ["TQ-PAC-COV", "PAC-0620", "TQ-PT-01", 800, "LIBERADO", 130],
+  ];
+  for (const [lot, article, location, physical, quality, expiryIn] of supplementalLots) {
+    await c.query(
+      `INSERT INTO lots(id,article_id,expiry,received_at,quality)
+       VALUES($1,$2,CURRENT_DATE+$4::integer,CURRENT_DATE-29,$3)
+       ON CONFLICT(id) DO NOTHING`,
+      [lot, article, quality, expiryIn],
+    );
+    await c.query(
+      `INSERT INTO balances(lot_id,location_id,physical,reserved)
+       VALUES($1,$2,$3,0) ON CONFLICT(lot_id,location_id) DO NOTHING`,
+      [lot, location, physical],
+    );
+    await c.query(
+      `INSERT INTO movements(id,business_key,type,lot_id,location_id,quantity,document_id,reason,actor,created_at)
+       VALUES($1,$2,'RECEPCION',$3,$4,$5,$6,'Cobertura histórica ficticia para escenario por planta','demo-dashboard',CURRENT_DATE-29)
+       ON CONFLICT(business_key) DO NOTHING`,
+      [
+        randomUUID(),
+        `demo-dashboard:supplemental:${lot}`,
+        lot,
+        location,
+        physical,
+        `REC-DASH-${lot}`,
+      ],
+    );
+  }
+  await c.query(
+    `UPDATE balances SET reserved=550
+     WHERE lot_id='SC-261016' AND location_id='SC-PT-01'`,
+  );
+  await c.query(
+    `INSERT INTO documents(id,kind,status,data,created_at)
+     VALUES('PED-DASH-SC-ATP','PEDIDO','RESERVADO',$1,CURRENT_DATE-6)
+     ON CONFLICT(id) DO NOTHING`,
+    [{
+      articleId: "PAC-0620",
+      quantity: "400",
+      customer: "Escenario de presión ATP · DASHBOARD",
+      warehouseId: "SANTA-CRUZ",
+    }],
+  );
+  await c.query(
+    `INSERT INTO reservations(id,document_id,lot_id,location_id,quantity,status,explanation)
+     SELECT $1,'PED-DASH-SC-ATP','SC-261016','SC-PT-01',400,'ACTIVA','FEFO: reserva ficticia que genera presión ATP en Santa Cruz.'
+     WHERE NOT EXISTS(SELECT 1 FROM reservations WHERE document_id='PED-DASH-SC-ATP')`,
+    [randomUUID()],
+  );
   const countedQuantities = [170, 400, 720, 1740, 2280, 3430];
   for (const [index, row] of rows.entries()) {
     const reason = `Conteo histórico ficticio KPI ${index + 1}`;
@@ -187,6 +246,131 @@ async function ensureDashboardDemo(c: any) {
         reason,
         row.receivedAgo,
       ],
+    );
+  }
+  const openingBridges = [
+    ["HU-261004", "HU-PT-01", 420, 23],
+    ["SC-261016", "SC-PT-01", 2400, 11],
+    ["TQ-261012", "TQ-PT-01", 1800, 15],
+  ] as const;
+  for (const [lot, location, physical, receiptDay] of openingBridges) {
+    for (const [suffix, quantity, day] of [
+      ["open", physical, 29],
+      ["close", -physical, receiptDay],
+    ] as const) {
+      await c.query(
+        `INSERT INTO movements(id,business_key,type,lot_id,location_id,quantity,document_id,reason,actor,created_at)
+         VALUES($1,$2,'SALDO_HISTORICO',$3,$4,$5,$6,'Puente ficticio de saldo inicial para la serie ejecutiva','demo-dashboard',CURRENT_DATE-$7::integer)
+         ON CONFLICT(business_key) DO NOTHING`,
+        [
+          randomUUID(),
+          `demo-dashboard:opening:${lot}:${suffix}`,
+          lot,
+          location,
+          quantity,
+          `OPEN-${lot}-${suffix}`,
+          day,
+        ],
+      );
+    }
+  }
+  const movementProfiles = [
+    ["EA-261001", "EA-PT-01", [120, -80, 160, -140, 90, -150], [24, 20, 16, 12, 8, 4]],
+    ["HU-261004", "HU-PT-01", [80, -45, 110, -95, 70, -120], [20, 17, 14, 11, 8, 4]],
+    ["SC-261016", "SC-PT-01", [260, -170, 310, -240, 190, -350], [10, 8, 6, 4, 2, 1]],
+    ["TQ-261012", "TQ-PT-01", [180, -120, 230, -160, 140, -270], [14, 12, 10, 8, 6, 4]],
+    ["PT-2601", "PT-A1", [45, -25, 60, -50, 35, -65], [24, 20, 16, 12, 8, 4]],
+  ] as const;
+  for (const [lot, location, changes, profileDays] of movementProfiles) {
+    for (const [index, quantity] of changes.entries()) {
+      await c.query(
+        `INSERT INTO movements(id,business_key,type,lot_id,location_id,quantity,document_id,reason,actor,created_at)
+         VALUES($1,$2,'AJUSTE_DEMO',$3,$4,$5,$6,'Variación histórica ficticia para evolución ejecutiva','demo-dashboard',CURRENT_DATE-$7::integer)
+         ON CONFLICT(business_key) DO NOTHING`,
+        [
+          randomUUID(),
+          `demo-dashboard:history:${lot}:${index + 1}`,
+          lot,
+          location,
+          quantity,
+          `HIST-${lot}-${index + 1}`,
+          profileDays[index],
+        ],
+      );
+    }
+  }
+  const santaCruzVariation = [540, -330, 590, -460, 410, -750];
+  const santaCruzDays = [10, 8, 6, 4, 2, 1];
+  for (const [index, quantity] of santaCruzVariation.entries()) {
+    await c.query(
+      `INSERT INTO movements(id,business_key,type,lot_id,location_id,quantity,document_id,reason,actor,created_at)
+       VALUES($1,$2,'AJUSTE_DEMO',$3,$4,$5,$6,'Variación adicional ficticia para hacer visible la presión ATP','demo-dashboard',CURRENT_DATE-$7::integer)
+       ON CONFLICT(business_key) DO NOTHING`,
+      [
+        randomUUID(),
+        `demo-dashboard:history-v2:SC-261016:${index + 1}`,
+        "SC-261016",
+        "SC-PT-01",
+        quantity,
+        `HIST-V2-SC-${index + 1}`,
+        santaCruzDays[index],
+      ],
+    );
+  }
+  const countProfiles = [
+    ["EA-261001", "EA-PT-01", 180, [178, 172, 180, 168, 176, 155], [24, 20, 16, 12, 8, 4]],
+    ["HU-261004", "HU-PT-01", 420, [405, 412, 400, 415, 408, 416], [20, 17, 14, 11, 8, 4]],
+    ["SC-261016", "SC-PT-01", 2400, [2350, 2300, 2375, 2320, 2360, 2376], [10, 8, 6, 4, 2, 1]],
+    ["TQ-261012", "TQ-PT-01", 1800, [1780, 1750, 1785, 1730, 1770, 1788], [14, 12, 10, 8, 6, 4]],
+    ["PT-2601", "PT-A1", 200, [196, 192, 199, 190, 197, 197], [24, 20, 16, 12, 8, 4]],
+  ] as const;
+  for (const [lot, location, theoretical, countedSeries, profileDays] of countProfiles) {
+    for (const [index, counted] of countedSeries.entries()) {
+      const reason = `Evolución ficticia ${lot} periodo ${index + 1}`;
+      await c.query(
+        `INSERT INTO counts(id,lot_id,location_id,theoretical,counted,balance_version,status,reason,created_by,approved_by,created_at)
+         SELECT $1,$2,$3,$4,$5,1,'APROBADO',$6,'demo-dashboard','demo-supervisor',CURRENT_DATE-$7::integer
+         WHERE NOT EXISTS(SELECT 1 FROM counts WHERE reason=$6)`,
+        [
+          randomUUID(),
+          lot,
+          location,
+          theoretical,
+          counted,
+          reason,
+          profileDays[index],
+        ],
+      );
+    }
+  }
+  // Keep the already-created local demo aligned with the latest, intentionally
+  // small discrepancies. Only rows owned by the dashboard demo are updated;
+  // operational counts entered by users are never touched.
+  for (const [lot, counted] of [
+    ["HU-261004", 416],
+    ["TQ-261012", 1788],
+    ["PT-2601", 197],
+  ] as const) {
+    await c.query(
+      `UPDATE counts
+       SET counted=$2
+       WHERE lot_id=$1
+         AND reason=$3
+         AND created_by='demo-dashboard'`,
+      [lot, counted, `Evolución ficticia ${lot} periodo 6`],
+    );
+  }
+  for (const [lot, location, theoretical, counted] of [
+    ["HU-261004", "HU-PT-01", 420, 410],
+    ["SC-261016", "SC-PT-01", 2400, 2380],
+    ["TQ-261012", "TQ-PT-01", 1800, 1775],
+  ] as const) {
+    const reason = `Apertura histórica ficticia ${lot}`;
+    await c.query(
+      `INSERT INTO counts(id,lot_id,location_id,theoretical,counted,balance_version,status,reason,created_by,approved_by,created_at)
+       SELECT $1,$2,$3,$4,$5,1,'APROBADO',$6,'demo-dashboard','demo-supervisor',CURRENT_DATE-28
+       WHERE NOT EXISTS(SELECT 1 FROM counts WHERE reason=$6)`,
+      [randomUUID(), lot, location, theoretical, counted, reason],
     );
   }
   const historyDays = [27, 23, 19, 15, 11, 7];

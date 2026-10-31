@@ -221,6 +221,7 @@ function App() {
   const [quality, setQuality] = useState("Todos");
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [detail, setDetail] = useState<Row | null>(null);
+  const [coverage, setCoverage] = useState<Row | null>(null);
   const [notice, setNotice] = useState<{
     text: string;
     error?: boolean;
@@ -237,6 +238,16 @@ function App() {
   const [dismissedAlert, setDismissedAlert] = useState("");
   const [expandedPanel, setExpandedPanel] = useState("");
   const [replenishmentView, setReplenishmentView] = useState("attention");
+  const [countPlant, setCountPlant] = useState("Todas");
+  const [countWarehouse, setCountWarehouse] = useState("Todos");
+  const [countStatus, setCountStatus] = useState("Todos");
+  const [countView, setCountView] = useState("attention");
+  const [orderPlant, setOrderPlant] = useState("Todas");
+  const [orderWarehouse, setOrderWarehouse] = useState("Todos");
+  const [orderArticle, setOrderArticle] = useState("Todos");
+  const [orderStatus, setOrderStatus] = useState("Todos");
+  const [ropPlant, setRopPlant] = useState("Todas");
+  const [ropWarehouse, setRopWarehouse] = useState("Todos");
   const can = (p: string) =>
     data?.user?.permissions.includes("*") ||
     data?.user?.permissions.includes(p);
@@ -263,6 +274,16 @@ function App() {
     setPlantFilter("Todas");
     setWh("Todos");
     setQuality(p === "Lotes pendientes" ? "CUARENTENA" : "Todos");
+    setCountPlant("Todas");
+    setCountWarehouse("Todos");
+    setCountStatus("Todos");
+    setCountView("attention");
+    setOrderPlant("Todas");
+    setOrderWarehouse("Todos");
+    setOrderArticle("Todos");
+    setOrderStatus("Todos");
+    setRopPlant("Todas");
+    setRopWarehouse("Todos");
     if (p === "Punto de reorden" || p === "Indicadores")
       setReplenishmentView("attention");
     setMobile(false);
@@ -711,6 +732,29 @@ function App() {
           "Cambia la elegibilidad, no la cantidad física. Un lote bloqueado no puede despacharse aunque tenga reservas.",
         );
         break;
+      case "recount":
+        show(
+          "count.create",
+          "Registrar reconteo de verificación",
+          [
+            field("id", "Identificador", "text", crypto.randomUUID()),
+            { ...select("lotId", "Lote", "lots"), value: row.lot_id },
+            {
+              ...select("locationId", "Ubicación", "locations"),
+              value: row.location_id,
+            },
+            field("quantity", "Cantidad contada nuevamente", "number"),
+            field(
+              "reason",
+              "Observación",
+              "text",
+              `Reconteo de control por diferencia de ${fmt(Math.abs(number(row.counted) - number(row.theoretical)))}`,
+            ),
+          ],
+          {},
+          "El reconteo debe realizarlo una persona distinta cuando sea posible. Se registra como PENDIENTE y otro usuario autorizado decide si aprueba el ajuste.",
+        );
+        break;
       case "policy":
         show(
           "article.policy",
@@ -1017,11 +1061,6 @@ function App() {
       (article: Row) => [article.id, article] as [string, Row],
     ),
   );
-  const documentById = new Map<string, Row>(
-    (data.documents || []).map(
-      (document: Row) => [document.id, document] as [string, Row],
-    ),
-  );
   const dashboardPlants = [
     ...new Set(
       (data.warehouses || [])
@@ -1029,6 +1068,88 @@ function App() {
         .filter(Boolean),
     ),
   ] as string[];
+  const countRows: Row[] = (data.counts || []).map((count: Row) => {
+    const location = locationById.get(count.location_id) || {};
+    const warehouse = warehouseById.get(location.warehouse_id) || {};
+    const lot = lotById.get(count.lot_id) || {};
+    const article = articleById.get(lot.article_id) || {};
+    const difference = number(count.counted) - number(count.theoretical);
+    const accuracy = number(count.theoretical)
+      ? Math.max(0, 100 - (Math.abs(difference) / number(count.theoretical)) * 100)
+      : 100;
+    return {
+      ...count,
+      article_id: lot.article_id,
+      article_name: article.name || lot.article_id,
+      unit: article.unit || "u.",
+      warehouse_id: location.warehouse_id,
+      warehouse_name: warehouse.name || location.warehouse_id,
+      plant_name: warehouse.center || warehouse.name || location.warehouse_id,
+      location_name: location.name || count.location_id,
+      difference,
+      absoluteDifference: Math.abs(difference),
+      accuracy,
+    };
+  });
+  const latestCountByPosition = countRows.reduce(
+    (latest: Map<string, Row>, row: Row) => {
+      const key = `${row.lot_id}:${row.location_id}`;
+      const current = latest.get(key);
+      if (
+        !current ||
+        new Date(row.created_at).getTime() > new Date(current.created_at).getTime()
+      )
+        latest.set(key, row);
+      return latest;
+    },
+    new Map<string, Row>(),
+  );
+  const currentCountIds = new Set(
+    [...latestCountByPosition.values()].map((row: Row) => row.id),
+  );
+  const countBaseRows = countRows.filter((row: Row) =>
+    countView === "history"
+      ? true
+      : countView === "current"
+        ? currentCountIds.has(row.id)
+        : currentCountIds.has(row.id) &&
+          (number(row.absoluteDifference) > 0 || row.status === "PENDIENTE"),
+  );
+  const filteredCountRows = countBaseRows
+    .filter(
+      (row: Row) =>
+        (countPlant === "Todas" || row.plant_name === countPlant) &&
+        (countWarehouse === "Todos" || row.warehouse_id === countWarehouse) &&
+        (countStatus === "Todos" || row.status === countStatus) &&
+        JSON.stringify(row).toLowerCase().includes(query.toLowerCase()),
+    )
+    .sort(
+      (a: Row, b: Row) =>
+        (a.status === "PENDIENTE" ? -1 : 0) -
+          (b.status === "PENDIENTE" ? -1 : 0) ||
+        number(b.absoluteDifference) - number(a.absoluteDifference) ||
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
+  const orderRows: Row[] = (data.documents || []).filter(
+    (row: Row) => row.kind === "PEDIDO",
+  );
+  const filteredOrderRows = orderRows.filter((row: Row) => {
+    const warehouse = warehouseById.get(row.data?.warehouseId) || {};
+    return (
+      (orderPlant === "Todas" || warehouse.center === orderPlant) &&
+      (orderWarehouse === "Todos" || row.data?.warehouseId === orderWarehouse) &&
+      (orderArticle === "Todos" || row.data?.articleId === orderArticle) &&
+      (orderStatus === "Todos" || row.status === orderStatus) &&
+      JSON.stringify(row).toLowerCase().includes(query.toLowerCase())
+    );
+  });
+  const visibleOrderIds = new Set(filteredOrderRows.map((row: Row) => row.id));
+  const visibleCommitted = (data.reservations || [])
+    .filter(
+      (row: Row) =>
+        visibleOrderIds.has(row.document_id) && row.status === "ACTIVA",
+    )
+    .reduce((sum: number, row: Row) => sum + number(row.quantity), 0);
   const dashboardWarehouseIds = new Set(
     (data.warehouses || [])
       .filter(
@@ -1131,7 +1252,7 @@ function App() {
       Math.abs(number(row.reservation_difference)),
     0,
   );
-  const dashboardCounts = (data.counts || []).filter((row: Row) => {
+  const dashboardCountHistory = (data.counts || []).filter((row: Row) => {
     const location = locationById.get(row.location_id);
     return (
       row.status === "APROBADO" &&
@@ -1140,6 +1261,18 @@ function App() {
       dashboardWarehouseIds.has(location.warehouse_id)
     );
   });
+  const dashboardCounts = Array.from(
+    dashboardCountHistory.reduce((latest: Map<string, Row>, row: Row) => {
+      const key = `${row.lot_id}:${row.location_id}`;
+      const previous = latest.get(key);
+      if (
+        !previous ||
+        new Date(row.created_at).getTime() > new Date(previous.created_at).getTime()
+      )
+        latest.set(key, row);
+      return latest;
+    }, new Map<string, Row>()).values(),
+  ) as Row[];
   const countedTheoretical = dashboardCounts.reduce(
     (total: number, row: Row) => total + number(row.theoretical),
     0,
@@ -1154,28 +1287,6 @@ function App() {
     : dashboardPhysical
       ? Math.max(0, 100 - (reconciliationDifference / dashboardPhysical) * 100)
       : 100;
-  const fefoArticleIds = new Set(
-    dashboardArticles
-      .filter((article: Row) => article.policy === "FEFO")
-      .map((article: Row) => article.id),
-  );
-  const fefoReservations = (data.reservations || []).filter((row: Row) => {
-    const lot = lotById.get(row.lot_id);
-    return lot && fefoArticleIds.has(lot.article_id) && dashboardLotIds.has(row.lot_id);
-  });
-  const fefoCorrect = fefoReservations.filter((row: Row) =>
-    String(row.explanation || "").startsWith("FEFO:"),
-  ).length;
-  const fefoPct = fefoReservations.length
-    ? (fefoCorrect / fefoReservations.length) * 100
-    : 100;
-  const expiringSoon = dashboardInventory.filter((row) => {
-    if (!row.expiry || number(row.physical) <= 0) return false;
-    const days = Math.ceil(
-      (new Date(row.expiry).getTime() - Date.now()) / 86400000,
-    );
-    return days >= 0 && days <= 30;
-  }).length;
   const dashboardRisk: Row[] = (data.warehouses || [])
     .filter((warehouse: Row) => dashboardWarehouseIds.has(warehouse.id))
     .map((warehouse: Row) => {
@@ -1251,12 +1362,6 @@ function App() {
       dashboardWarehouseIds.has(location.warehouse_id)
     );
   });
-  const trendFefoReservations = fefoReservations
-    .map((reservation: Row) => ({
-      ...reservation,
-      eventDate: documentById.get(reservation.document_id)?.created_at,
-    }))
-    .filter((reservation: Row) => reservation.eventDate);
   const trendPoints = Array.from({ length: 7 }, (_, index) => {
     const pointDate = new Date(
       trendStart.getTime() + (trendSpan * index) / 6,
@@ -1289,10 +1394,22 @@ function App() {
     const reservedAt = dashboardInventory
       .filter((row) => presentLots.has(row.lot_id) && number(row.available) > 0)
       .reduce((total, row) => total + number(row.reserved), 0);
-    const countsAt = dashboardCounts.filter(
+    const countHistoryAt = dashboardCountHistory.filter(
       (row: Row) =>
         new Date(row.created_at).getTime() <= pointDate.getTime(),
     );
+    const countsAt = Array.from(
+      countHistoryAt.reduce((latest: Map<string, Row>, row: Row) => {
+        const key = `${row.lot_id}:${row.location_id}`;
+        const previous = latest.get(key);
+        if (
+          !previous ||
+          new Date(row.created_at).getTime() > new Date(previous.created_at).getTime()
+        )
+          latest.set(key, row);
+        return latest;
+      }, new Map<string, Row>()).values(),
+    ) as Row[];
     const theoreticalAt = countsAt.reduce(
       (total: number, row: Row) => total + number(row.theoretical),
       0,
@@ -1302,13 +1419,6 @@ function App() {
         total + Math.abs(number(row.counted) - number(row.theoretical)),
       0,
     );
-    const fefoAt = trendFefoReservations.filter(
-      (row: Row) =>
-        new Date(row.eventDate).getTime() <= pointDate.getTime(),
-    );
-    const fefoCorrectAt = fefoAt.filter((row: Row) =>
-      String(row.explanation || "").startsWith("FEFO:"),
-    ).length;
     return {
       label: shortDay(pointDate),
       atp: physicalAt
@@ -1320,140 +1430,247 @@ function App() {
       accuracy: theoreticalAt
         ? Math.max(0, 100 - (countDifferenceAt / theoreticalAt) * 100)
         : null,
-      fefo: fefoAt.length ? (fefoCorrectAt / fefoAt.length) * 100 : null,
     };
   });
-  const dashboardRows: Row[] = dashboardInventory
-    .map((row: Row): Row => {
-      const article = articleById.get(row.article_id);
-      const planning = dashboardPlanning.find(
-        (item: Row) => item.id === row.article_id,
-      );
-      const daysToExpiry = row.expiry
-        ? Math.ceil((new Date(row.expiry).getTime() - Date.now()) / 86400000)
-        : null;
-      const articleAtp = dashboardInventory
-        .filter((position) => position.article_id === row.article_id)
-        .reduce((total, position) => total + number(position.available), 0);
-      const lotIneligible =
-        row.quality !== "LIBERADO" ||
-        (row.expiry && new Date(row.expiry).getTime() < Date.now());
-      const noArticleAtp = articleAtp <= 0;
-      const critical = noArticleAtp || Boolean(planning?.underRop);
-      const warning = !critical && daysToExpiry !== null && daysToExpiry <= 30;
-      const unavailableLot = !critical && number(row.available) <= 0;
-      return {
+  const dashboardPositionGroups = Array.from(
+    dashboardInventory
+      .reduce((groups: Map<string, Row>, position: Row) => {
+        const key = `${position.article_id}:${position.warehouse_id}`;
+        const group = groups.get(key) || {
+          id: key,
+          article_id: position.article_id,
+          warehouse_id: position.warehouse_id,
+          positions: [],
+        };
+        group.positions.push(position);
+        groups.set(key, group);
+        return groups;
+      }, new Map<string, Row>())
+      .values(),
+  ) as Row[];
+  const dashboardRowsAll: Row[] = dashboardPositionGroups.map((group: Row) => {
+    const article = articleById.get(group.article_id) || {};
+    const positions = group.positions as Row[];
+    const physical = positions.reduce((sum, row) => sum + number(row.physical), 0);
+    const reserved = positions.reduce((sum, row) => sum + number(row.reserved), 0);
+    const available = positions.reduce((sum, row) => sum + number(row.available), 0);
+    const blocked = positions.reduce((sum, row) => sum + number(row.blocked), 0);
+    const rop =
+      number(article.daily_demand) * number(article.lead_days) +
+      number(article.safety_stock);
+    const nearest = [...positions].sort((a: Row, b: Row) => {
+      if (!a.expiry) return 1;
+      if (!b.expiry) return -1;
+      return new Date(a.expiry).getTime() - new Date(b.expiry).getTime();
+    })[0];
+    const positionKeys = new Set(
+      positions.map((row: Row) => `${row.lot_id}:${row.location_id}`),
+    );
+    const counts = dashboardCounts.filter((row: Row) =>
+      positionKeys.has(`${row.lot_id}:${row.location_id}`),
+    );
+    const countTheoretical = counts.reduce(
+      (sum: number, row: Row) => sum + number(row.theoretical),
+      0,
+    );
+    const countDifference = counts.reduce(
+      (sum: number, row: Row) =>
+        sum + Math.abs(number(row.counted) - number(row.theoretical)),
+      0,
+    );
+    const countAccuracy = countTheoretical
+      ? Math.max(0, 100 - (countDifference / countTheoretical) * 100)
+      : 100;
+    const countPositions = counts
+      .map((row: Row) => ({
         ...row,
-        article,
-        articleAtp,
-        rop: planning?.rop || 0,
-        daysToExpiry,
-        severity: critical ? 2 : warning || unavailableLot ? 1 : 0,
-        statusText:
-          noArticleAtp
-            ? "Crítico · Sin ATP del artículo"
-            : planning?.underRop
-              ? "Crítico · Bajo ROP"
-              : lotIneligible
-                ? "Atención · Lote no elegible"
-                : unavailableLot
-                  ? "Atención · Lote sin saldo libre"
-              : warning
-                ? "Atención · Próximo a vencer"
-                : "Cumple",
-        actionPage:
-          noArticleAtp || planning?.underRop
-            ? "Punto de reorden"
-            : lotIneligible
-              ? "Lotes"
-              : unavailableLot
-                ? "Reservas"
-                : warning
-                  ? "Preparación FIFO/FEFO"
-                  : "",
-        actionLabel:
-          noArticleAtp || planning?.underRop
-            ? "Revisar reposición"
-            : lotIneligible
-              ? "Revisar lote"
-              : unavailableLot
-                ? "Revisar reservas"
-                : warning
+        difference: number(row.counted) - number(row.theoretical),
+      }))
+      .filter((row: Row) => Math.abs(number(row.difference)) > 0)
+      .sort(
+        (a: Row, b: Row) =>
+          Math.abs(number(b.difference)) - Math.abs(number(a.difference)),
+      );
+    const primaryCount = countPositions[0];
+    const atpRatio = physical ? (available / physical) * 100 : 100;
+    const blockedRatio = physical ? (blocked / physical) * 100 : 0;
+    const daysToExpiry = nearest?.expiry
+      ? Math.ceil((new Date(nearest.expiry).getTime() - Date.now()) / 86400000)
+      : null;
+    const countIssue = counts.length > 0 && countAccuracy < 95;
+    const affectedIssue = blocked > 0;
+    const atpIssue = !affectedIssue && atpRatio < 90;
+    const ropIssue = available <= rop;
+    const expiryIssue =
+      !countIssue && !affectedIssue && !atpIssue && !ropIssue &&
+      daysToExpiry !== null && daysToExpiry <= 30;
+    const issue = countIssue
+      ? "accuracy"
+      : affectedIssue
+        ? "affected"
+        : atpIssue
+          ? "atp"
+          : ropIssue
+            ? "rop"
+            : expiryIssue
+              ? "expiry"
+              : "ok";
+    const severity =
+      countIssue && countAccuracy < 90 ||
+      affectedIssue && blockedRatio > 8 ||
+      atpIssue && atpRatio < 85 ||
+      ropIssue
+        ? 2
+        : issue === "ok"
+          ? 0
+          : 1;
+    return {
+      ...nearest,
+      id: group.id,
+      article,
+      positions,
+      physical,
+      reserved,
+      available,
+      blocked,
+      rop,
+      atpRatio,
+      blockedRatio,
+      countAccuracy,
+      countDifference,
+      countTheoretical,
+      countPositions,
+      primaryCount,
+      daysToExpiry,
+      issue,
+      severity,
+      statusText:
+        issue === "accuracy"
+          ? `Diferencia de conteo · ${percent(countAccuracy)}`
+          : issue === "affected"
+            ? `${fmt(blocked)} ${article.unit || "u."} no elegibles`
+            : issue === "atp"
+              ? `ATP insuficiente · ${percent(atpRatio)}`
+              : issue === "rop"
+                ? `Bajo ROP · brecha ${fmt(Math.max(0, rop - available))}`
+                : issue === "expiry"
+                  ? `Lote vence en ${daysToExpiry} días`
+                  : "Cumple",
+      actionLabel:
+        issue === "accuracy"
+          ? "Revisar conteo"
+          : issue === "affected"
+            ? "Revisar calidad"
+            : issue === "atp"
+              ? "Resolver cobertura"
+              : issue === "rop"
+                ? "Preparar reposición"
+                : issue === "expiry"
                   ? "Priorizar FEFO"
                   : "",
-      };
-    })
-    .sort(
-      (a: Row, b: Row) =>
-        b.severity - a.severity ||
-        number(a.available) - number(b.available),
-    )
-    .slice(0, 6);
-  const dashboardAlert =
+      actionPage:
+        issue === "accuracy"
+          ? "Conteos y diferencias"
+          : issue === "affected"
+            ? "Lotes pendientes"
+            : issue === "rop"
+              ? "Punto de reorden"
+              : issue === "expiry"
+                ? "Preparación FIFO/FEFO"
+                : "",
+    };
+  });
+  const dashboardRowsSorted = [...dashboardRowsAll].sort(
+    (a: Row, b: Row) =>
+      number(b.severity) - number(a.severity) ||
+      number(a.atpRatio) - number(b.atpRatio) ||
+      number(b.countDifference) - number(a.countDifference),
+  );
+  const dashboardRows: Row[] = [];
+  for (const issue of ["accuracy", "affected", "atp", "rop"]) {
+    const row = dashboardRowsSorted.find((item: Row) => item.issue === issue);
+    if (row) dashboardRows.push(row);
+  }
+  for (const row of dashboardRowsSorted) {
+    if (dashboardRows.length >= 6) break;
+    if (!dashboardRows.some((item) => item.id === row.id)) dashboardRows.push(row);
+  }
+  const reviewDashboardCount = (row: Row) => {
+    const focus = row.primaryCount || {};
+    const warehouse = warehouseById.get(row.warehouse_id) || {};
+    navigate("Conteos y diferencias");
+    setCountPlant(warehouse.center || warehouse.name || "Todas");
+    setCountWarehouse(row.warehouse_id || "Todos");
+    setCountStatus("Todos");
+    setCountView("attention");
+    setQuery(focus.lot_id || row.article_id || "");
+  };
+  // The banner surfaces only the most urgent breached KPI. Local exceptions
+  // remain visible in the decision centre without falsely presenting the whole
+  // portfolio as failed.
+  const dashboardAlert = ([
     accuracyPct < 95
       ? {
           key: "accuracy",
-          level: "critical",
+          severity: accuracyPct < 90 ? 2 : 1,
+          score: 95 - accuracyPct,
+          level: accuracyPct < 90 ? "critical" : "warning",
           title: "Exactitud del inventario por debajo de la meta",
           detail: `La exactitud es ${percent(accuracyPct)} y la meta es 95%. Revisa las diferencias de conteo antes de prometer inventario.`,
           gap: `BRECHA: ${points(accuracyPct - 95)}`,
           action: "Revisar conteos",
           page: "Conteos y diferencias",
         }
-      : atpPct < 90
-        ? {
-            key: "atp",
-            level: "critical",
-            title: "Disponibilidad ATP por debajo de la meta",
-            detail: `El ATP es ${percent(atpPct)} frente a la meta de 90%. Hay riesgo de prometer unidades que no están libres.`,
-            gap: `BRECHA: ${points(atpPct - 90)}`,
-            action: "Revisar existencias",
-            page: "Existencias",
-          }
-        : dashboardLow.length > 0
-          ? {
-              key: "rop-" + dashboardLow.map((row: Row) => row.id).join("-"),
-              level: "warning",
-              title: "Reposición requerida para evitar quiebres",
-              detail: `${dashboardLow.length} de ${dashboardPlanning.length} SKU están bajo su punto de reorden. Prioriza ${dashboardLow
-                .slice(0, 3)
-                .map((row: Row) => row.id)
-                .join(", ")}.`,
-              gap: `${percent(lowPct)} DEL PORTAFOLIO`,
-              action: "Revisar reposición",
-              page: "Punto de reorden",
-            }
-          : affectedUnitsPct > 5
-            ? {
-                key: "affected",
-                level: "warning",
-                title: "Unidades retenidas por encima del límite",
-                detail: `${percent(affectedUnitsPct)} del stock está bloqueado o no es elegible. La meta máxima es 5%.`,
-                gap: `EXCESO: ${points(affectedUnitsPct - 5)}`,
-                action: "Revisar calidad",
-                page: "Lotes pendientes",
-              }
-            : fefoPct < 95
-              ? {
-                  key: "fefo",
-                  level: "warning",
-                  title: "Cumplimiento FEFO por debajo de la meta",
-                  detail: `El cumplimiento es ${percent(fefoPct)} frente a la meta de 95%. Revisa la preparación de lotes próximos a vencer.`,
-                  gap: `BRECHA: ${points(fefoPct - 95)}`,
-                  action: "Revisar reservas",
-                  page: "Preparación FIFO/FEFO",
-                }
-              : expiringSoon > 0
-                ? {
-                    key: "expiry-" + expiringSoon,
-                    level: "warning",
-                    title: "Lotes próximos a vencer",
-                    detail: `${expiringSoon} posiciones de inventario vencen en los próximos 30 días y requieren prioridad FEFO.`,
-                    gap: `${expiringSoon} POSICIONES`,
-                    action: "Revisar lotes",
-                    page: "Lotes",
-                  }
-                : null;
+      : null,
+    atpPct < 90
+      ? {
+          key: "atp",
+          severity: atpPct < 85 ? 2 : 1,
+          score: 90 - atpPct,
+          level: atpPct < 85 ? "critical" : "warning",
+          title: "Disponibilidad ATP por debajo de la meta",
+          detail: `El ATP es ${percent(atpPct)} frente a la meta de 90%. Hay riesgo de prometer unidades que no están libres.`,
+          gap: `BRECHA: ${points(atpPct - 90)}`,
+          action: "Revisar existencias",
+          page: "Existencias",
+        }
+      : null,
+    lowPct > 10
+      ? {
+          key: "rop-" + dashboardLow.map((row: Row) => row.id).join("-"),
+          severity: lowPct > 20 ? 2 : 1,
+          score: lowPct - 10,
+          level: lowPct > 20 ? "critical" : "warning",
+          title: "Reposición requerida para evitar quiebres",
+          detail: `${dashboardLow.length} de ${dashboardPlanning.length} SKU están bajo su punto de reorden. Prioriza ${dashboardLow
+            .slice(0, 3)
+            .map((row: Row) => row.id)
+            .join(", ")}.`,
+          gap: `${percent(lowPct)} DEL PORTAFOLIO`,
+          action: "Revisar reposición",
+          page: "Punto de reorden",
+        }
+      : null,
+    affectedUnitsPct > 5
+      ? {
+          key: "affected",
+          severity: affectedUnitsPct > 8 ? 2 : 1,
+          score: affectedUnitsPct - 5,
+          level: affectedUnitsPct > 8 ? "critical" : "warning",
+          title: "Unidades retenidas por encima del límite",
+          detail: `${percent(affectedUnitsPct)} del stock está bloqueado o no es elegible. La meta máxima es 5%.`,
+          gap: `EXCESO: ${points(affectedUnitsPct - 5)}`,
+          action: "Revisar calidad",
+          page: "Lotes pendientes",
+        }
+      : null,
+  ]
+    .filter(Boolean) as Row[])
+    .sort(
+      (a: Row, b: Row) =>
+        number(b.severity) - number(a.severity) ||
+        number(b.score) - number(a.score),
+    )[0] || null;
   const pending =
     data.outbox?.filter((r: Row) => r.status !== "ENVIADO").length || 0;
   const permission =
@@ -1470,6 +1687,30 @@ function App() {
               : group === "Pedidos y despachos"
                 ? "despacho"
                 : "inventario";
+  function prepareCoverageTransfer(target: Row, source: Row, quantity: number) {
+    const destination = (data.locations || []).find(
+      (location: Row) => location.warehouse_id === target.warehouse_id,
+    );
+    setCoverage(null);
+    show(
+      "transfer.create",
+      "Traslado para recuperar cobertura ATP",
+      [
+        field("id", "Referencia", "text", reference("TR")),
+        { ...select("lotId", "Lote", "lots"), value: source.lot_id },
+        { ...select("fromLocation", "Origen", "locations"), value: source.location_id },
+        { ...select("toLocation", "Destino", "locations"), value: destination?.id },
+        field(
+          "quantity",
+          "Cantidad",
+          "number",
+          Math.max(1, Math.floor(quantity)),
+        ),
+      ],
+      {},
+      `Cobertura sugerida para ${target.article_id}. El traslado queda en tránsito hasta que el almacén destino confirme la recepción.`,
+    );
+  }
   function btn(label: string, fn: () => void, primary = false) {
     return (
       <button disabled={busy} className={primary ? "primary" : ""} onClick={fn}>
@@ -1816,8 +2057,8 @@ function App() {
       ),
     );
   }
-  function documents(kind: string) {
-    const rows = data.documents.filter((r: Row) => r.kind === kind);
+  function documents(kind: string, sourceRows?: Row[]) {
+    const rows = sourceRows || data.documents.filter((r: Row) => r.kind === kind);
     return table(
       rows,
       [
@@ -1844,6 +2085,20 @@ function App() {
                     Abastece: {warehouse?.name || r.data.warehouseId}
                     {warehouse?.center ? ` · ${warehouse.center}` : ""}
                   </small>
+                </div>
+              );
+            }
+            if (r.kind === "PEDIDO") {
+              const article = articleById.get(r.data.articleId) || {};
+              const warehouse = warehouseById.get(r.data.warehouseId) || {};
+              return (
+                <div>
+                  <strong>{article.name || r.data.articleId}</strong>
+                  <small>{r.data.articleId} · {fmt(r.data.quantity)} {article.unit || "u."}</small>
+                  <small>{r.data.customer} · {warehouse.name || r.data.warehouseId}</small>
+                  {r.data.promise && (
+                    <small>Promesa v{r.data.promise.version}: {r.data.promise.date} · estimada</small>
+                  )}
                 </div>
               );
             }
@@ -2186,16 +2441,6 @@ function App() {
               progress={accuracyPct}
               target={95}
             />
-            <DashboardKpi
-              label="Cumplimiento FEFO"
-              value={percent(fefoPct, 0)}
-              goal="Meta ≥ 95%"
-              comparison={`${points(fefoPct - 95)} vs. meta`}
-              status={fefoPct >= 95 ? "good" : "warning"}
-              icon={CheckCircle2}
-              progress={fefoPct}
-              target={95}
-            />
           </div>
 
           <div className="dashboard-analytics">
@@ -2214,7 +2459,6 @@ function App() {
                   <div className="chart-legend">
                     <span><i className="legend-atp" /> ATP</span>
                     <span><i className="legend-accuracy" /> Exactitud</span>
-                    <span><i className="legend-fefo" /> FEFO</span>
                     <span><i className="legend-target" /> Metas 90% / 95%</span>
                   </div>
                   <button
@@ -2236,9 +2480,9 @@ function App() {
               </div>
               <DashboardTrend points={trendPoints} />
               <small className="dashboard-chart-note">
-                ATP se reconstruye con movimientos confirmados; exactitud usa
-                conteos aprobados y FEFO, reservas históricas. Metas: ATP 90%;
-                exactitud y FEFO 95%.
+                ATP se reconstruye con movimientos confirmados y exactitud usa
+                conteos aprobados. Metas: ATP 90% y exactitud 95%. El control
+                FEFO permanece en Reservas y Preparación FIFO/FEFO.
               </small>
             </section>
 
@@ -2317,7 +2561,7 @@ function App() {
               <div>
                 <h3>Inventario y acciones prioritarias</h3>
                 <p>
-                  {dashboardInventory.length} posiciones · {dashboardLow.length} SKU bajo ROP
+                  {dashboardRowsAll.length} posiciones SKU–almacén · {dashboardRowsAll.filter((row: Row) => row.severity > 0).length} requieren atención
                 </p>
               </div>
               <div className="dashboard-card-meta">
@@ -2341,38 +2585,41 @@ function App() {
                   <tr>
                     <th>SKU</th>
                     <th>Producto</th>
-                    <th>Almacén</th>
+                    <th>Planta / centro</th>
                     <th>Stock físico</th>
                     <th>ATP</th>
                     <th>ROP</th>
-                    <th>Lote próximo a vencer</th>
+                    <th>Lote / control</th>
                     <th>Estado</th>
-                    <th>Acción</th>
+                    <th>Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
                   {dashboardRows.map((row) => (
                     <tr
-                      key={`${row.lot_id}-${row.location_id}`}
+                      key={row.id}
                       className={row.severity === 2 ? "dashboard-critical-row" : ""}
                     >
                       <td><strong>{row.article_id}</strong></td>
                       <td>
                         <strong>{row.article?.name || row.article}</strong>
-                        <small>{row.unit}</small>
+                        <small>{row.article?.unit || row.unit}</small>
                       </td>
                       <td>{warehouseById.get(row.warehouse_id)?.name || row.warehouse_id}</td>
                       <td>{fmt(row.physical)}</td>
-                      <td className={number(row.available) <= 0 ? "metric-danger" : ""}>
+                      <td className={number(row.atpRatio) < 90 ? "metric-danger" : ""}>
                         <strong>{fmt(row.available)}</strong>
+                        <small>{percent(row.atpRatio)}</small>
                       </td>
                       <td>{fmt(row.rop)}</td>
                       <td>
-                        <strong>{row.lot_id}</strong>
+                        <strong>{row.issue === "accuracy" ? row.primaryCount?.lot_id : row.lot_id}</strong>
                         <small>
-                          {row.expiry
-                            ? `${date(row.expiry)} · ${row.daysToExpiry} días`
-                            : "Sin vencimiento"}
+                          {row.issue === "accuracy"
+                            ? `${locationById.get(row.primaryCount?.location_id)?.name || row.primaryCount?.location_id} · diferencia ${fmt(row.countDifference)}`
+                            : row.expiry
+                              ? `${date(row.expiry)} · ${row.daysToExpiry} días`
+                              : "Sin vencimiento"}
                         </small>
                       </td>
                       <td>
@@ -2382,19 +2629,17 @@ function App() {
                       </td>
                       <td>
                         <div className="dashboard-row-actions">
-                          <button
-                            onClick={() =>
-                              setDetail(
-                                lotRows.find((lot: Row) => lot.lot_id === row.lot_id) || row,
-                              )
-                            }
-                          >
-                            Ver detalle
-                          </button>
-                          {row.severity > 0 ? (
+                          <button onClick={() => setDetail(row)}>Ver detalle</button>
+                          {row.issue !== "ok" ? (
                             <button
                               className="dashboard-recommendation"
-                              onClick={() => navigate(row.actionPage)}
+                              onClick={() =>
+                                row.issue === "atp"
+                                  ? setCoverage(row)
+                                  : row.issue === "accuracy"
+                                    ? reviewDashboardCount(row)
+                                  : navigate(row.actionPage)
+                              }
                             >
                               {row.actionLabel}
                             </button>
@@ -2679,10 +2924,67 @@ function App() {
         <>
           <div className="notice-strip">
             <Truck size={18} />
-            La salida confirmada descuenta el físico una sola vez. La entrega
-            posterior actualiza el estado logístico.
+            <span>
+              <b>Una reserva compromete ATP, pero todavía no descuenta el físico.</b>
+              <small>
+                Confirmar salida consume la reserva y descuenta el inventario; cancelar el pedido libera la cantidad comprometida. La promesa solo calcula una fecha estimada.
+              </small>
+            </span>
           </div>
-          <section className="panel">{documents("PEDIDO")}</section>
+          <div className="filters order-filters">
+            <label>
+              Planta o centro
+              <select
+                aria-label="Filtrar pedidos por planta"
+                value={orderPlant}
+                onChange={(event) => {
+                  setOrderPlant(event.target.value);
+                  setOrderWarehouse("Todos");
+                }}
+              >
+                <option value="Todas">Todas las plantas</option>
+                {dashboardPlants.map((plant) => <option key={plant}>{plant}</option>)}
+              </select>
+            </label>
+            <label>
+              Almacén
+              <select
+                aria-label="Filtrar pedidos por almacén"
+                value={orderWarehouse}
+                onChange={(event) => setOrderWarehouse(event.target.value)}
+              >
+                <option value="Todos">Todos los almacenes</option>
+                {(data.warehouses || [])
+                  .filter((warehouse: Row) => orderPlant === "Todas" || warehouse.center === orderPlant)
+                  .map((warehouse: Row) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
+              </select>
+            </label>
+            <label>
+              Artículo
+              <select
+                aria-label="Filtrar pedidos por artículo"
+                value={orderArticle}
+                onChange={(event) => setOrderArticle(event.target.value)}
+              >
+                <option value="Todos">Todos los artículos</option>
+                {(data.articles || []).map((article: Row) => <option key={article.id} value={article.id}>{article.id} · {article.name}</option>)}
+              </select>
+            </label>
+            <label>
+              Estado
+              <select
+                aria-label="Filtrar pedidos por estado"
+                value={orderStatus}
+                onChange={(event) => setOrderStatus(event.target.value)}
+              >
+                {["Todos", "PENDIENTE", "RESERVADO", "DESPACHADO", "ENTREGADO", "CANCELADO"].map((status) => <option key={status}>{status}</option>)}
+              </select>
+            </label>
+            <span className="muted">
+              {filteredOrderRows.length} pedidos · {fmt(visibleCommitted)} {orderArticle === "Todos" ? "unidades" : articleById.get(orderArticle)?.unit || "u."} comprometidas
+            </span>
+          </div>
+          <section className="panel">{documents("PEDIDO", filteredOrderRows)}</section>
         </>
       );
     if (page === "Reservas" || page === "Preparación FIFO/FEFO")
@@ -2723,26 +3025,132 @@ function App() {
         <>
           <div className="notice-strip">
             <ClipboardCheck size={18} />
-            Un conteo no mueve stock automáticamente. Otro usuario aprueba la
-            diferencia; si cambió el saldo, se exige repetir el conteo.
+            <span>
+              <b>El conteo vigente identifica la diferencia; el historial conserva la auditoría.</b>
+              <small>
+                Ante una diferencia aprobada, inicia un reconteo independiente para verificar el saldo actual. El nuevo registro queda pendiente hasta que otro usuario autorice el ajuste.
+              </small>
+            </span>
           </div>
-          <section className="panel">
-            {generic(
-              data.counts,
-              [
-                "lot_id",
-                "location_id",
-                "theoretical",
-                "counted",
-                "status",
-                "created_by",
-                "reason",
-              ],
-              (r) =>
-                r.status === "PENDIENTE" &&
-                can("aprobar_ajustes") &&
-                compact("Aprobar ajuste", () => action("count.approve", r)),
-            )}
+          <div className="filters count-filters">
+            <label>
+              Planta o centro
+              <select
+                aria-label="Filtrar conteos por planta"
+                value={countPlant}
+                onChange={(event) => {
+                  setCountPlant(event.target.value);
+                  setCountWarehouse("Todos");
+                }}
+              >
+                <option value="Todas">Todas las plantas</option>
+                {[...new Set(countRows.map((row: Row) => row.plant_name).filter(Boolean))].map(
+                  (plant) => <option key={plant} value={plant}>{plant}</option>,
+                )}
+              </select>
+            </label>
+            <label>
+              Almacén
+              <select
+                aria-label="Filtrar conteos por almacén"
+                value={countWarehouse}
+                onChange={(event) => setCountWarehouse(event.target.value)}
+              >
+                <option value="Todos">Todos los almacenes</option>
+                {(data.warehouses || [])
+                  .filter(
+                    (warehouse: Row) =>
+                      countPlant === "Todas" || warehouse.center === countPlant,
+                  )
+                  .map((warehouse: Row) => (
+                    <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
+                  ))}
+              </select>
+            </label>
+            <label>
+              Estado
+              <select
+                aria-label="Filtrar conteos por estado"
+                value={countStatus}
+                onChange={(event) => setCountStatus(event.target.value)}
+              >
+                {[
+                  "Todos",
+                  "PENDIENTE",
+                  "APROBADO",
+                  "RECHAZADO",
+                ].map((status) => <option key={status}>{status}</option>)}
+              </select>
+            </label>
+            <span className="muted">
+              {filteredCountRows.length} conteos visibles · {filteredCountRows.filter((row: Row) => number(row.absoluteDifference) > 0).length} con diferencia
+            </span>
+          </div>
+          <section className="panel count-panel">
+            <div className="tabs count-tabs">
+              {[
+                ["attention", "Requieren atención"],
+                ["current", "Conteos vigentes"],
+                ["history", "Historial completo"],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  className={countView === value ? "active" : ""}
+                  onClick={() => setCountView(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="table-wrap count-table-wrap">
+              <table className="count-table">
+                <thead>
+                  <tr>
+                    <th>Lote / artículo</th>
+                    <th>Planta y almacén</th>
+                    <th>Ubicación</th>
+                    <th>Teórico</th>
+                    <th>Contado</th>
+                    <th>Diferencia</th>
+                    <th>Exactitud</th>
+                    <th>Estado</th>
+                    <th>Acción</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredCountRows.map((row: Row) => (
+                    <tr key={row.id} className={number(row.absoluteDifference) > 0 ? "count-difference-row" : ""}>
+                      <td>
+                        <strong>{row.lot_id}</strong>
+                        <small>{row.article_name} · {row.unit}</small>
+                      </td>
+                      <td>
+                        <strong>{row.plant_name}</strong>
+                        <small>{row.warehouse_name}</small>
+                      </td>
+                      <td>{row.location_name}</td>
+                      <td>{fmt(row.theoretical)}</td>
+                      <td>{fmt(row.counted)}</td>
+                      <td className={number(row.absoluteDifference) > 0 ? "metric-danger" : ""}>
+                        <strong>{number(row.difference) > 0 ? "+" : ""}{fmt(row.difference)}</strong>
+                      </td>
+                      <td>{percent(row.accuracy)}</td>
+                      <td><Badge value={row.status} /></td>
+                      <td>
+                        {row.status === "PENDIENTE" && can("aprobar_ajustes")
+                          ? compact("Aprobar ajuste", () => action("count.approve", row))
+                          : number(row.absoluteDifference) > 0
+                            ? compact("Iniciar reconteo", () => action("recount", row))
+                            : <span className="muted">Sin acción requerida</span>}
+                      </td>
+                    </tr>
+                  ))}
+                  {!filteredCountRows.length && (
+                    <tr><td colSpan={9} className="dashboard-empty">No hay conteos que coincidan con los filtros.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </section>
         </>
       );
@@ -2795,10 +3203,34 @@ function App() {
         </>
       );
     if (page === "Punto de reorden" || page === "Indicadores") {
+      const scopedRop = ropPlant !== "Todas" || ropWarehouse !== "Todos";
+      const ropWarehouseIds = new Set(
+        (data.warehouses || [])
+          .filter(
+            (warehouse: Row) =>
+              (ropPlant === "Todas" || warehouse.center === ropPlant) &&
+              (ropWarehouse === "Todos" || warehouse.id === ropWarehouse),
+          )
+          .map((warehouse: Row) => warehouse.id),
+      );
+      const scopedInventory = (data.inventory || []).filter((row: Row) =>
+        ropWarehouseIds.has(row.warehouse_id),
+      );
+      const scopedArticleIds = new Set(
+        scopedInventory.map((row: Row) => row.article_id),
+      );
       const replenishmentRows = (data.planning || [])
+        .filter((row: Row) => !scopedRop || scopedArticleIds.has(row.id))
         .map((row: Row) => {
-          const available = number(row.available);
-          const incoming = number(row.incoming);
+          const available = scopedRop
+            ? scopedInventory
+                .filter((item: Row) => item.article_id === row.id)
+                .reduce((sum: number, item: Row) => sum + number(item.available), 0)
+            : number(row.available);
+          // Las compras del piloto todavía no poseen almacén destino en el
+          // documento maestro. Solo se incluyen en la vista consolidada para
+          // evitar atribuir tránsito global a una planta incorrecta.
+          const incoming = scopedRop ? 0 : number(row.incoming);
           const rop = number(row.rop);
           const position = available + incoming;
           const noAtp = available <= 0;
@@ -2851,10 +3283,44 @@ function App() {
         return row.noAtp || row.underRop;
       });
       const openSuggestions = (data.suggestions || []).filter(
-        (row: Row) => row.status === "ABIERTA",
+        (row: Row) =>
+          row.status === "ABIERTA" &&
+          replenishmentRows.some((item: Row) => item.id === row.article_id),
       );
       return (
         <>
+          <div className="filters rop-filters">
+            <label>
+              Planta o centro
+              <select
+                aria-label="Filtrar ROP por planta"
+                value={ropPlant}
+                onChange={(event) => {
+                  setRopPlant(event.target.value);
+                  setRopWarehouse("Todos");
+                }}
+              >
+                <option value="Todas">Todas las plantas</option>
+                {dashboardPlants.map((plant) => <option key={plant}>{plant}</option>)}
+              </select>
+            </label>
+            <label>
+              Almacén
+              <select
+                aria-label="Filtrar ROP por almacén"
+                value={ropWarehouse}
+                onChange={(event) => setRopWarehouse(event.target.value)}
+              >
+                <option value="Todos">Todos los almacenes</option>
+                {(data.warehouses || [])
+                  .filter((warehouse: Row) => ropPlant === "Todas" || warehouse.center === ropPlant)
+                  .map((warehouse: Row) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
+              </select>
+            </label>
+            <span className="muted">
+              {replenishmentRows.length} SKU evaluados en el alcance seleccionado
+            </span>
+          </div>
           <section className="rop-action-banner">
             <div className="rop-action-icon"><Activity size={22} /></div>
             <div>
@@ -3369,70 +3835,309 @@ function App() {
           submit={(v) => send(dialog.action, v, dialog.source)}
         />
       )}{" "}
+      {coverage && (() => {
+        const article = articleById.get(coverage.article_id) || {};
+        const gap = Math.max(
+          0,
+          Math.ceil(number(coverage.physical) * 0.9 - number(coverage.available)),
+        );
+        const alternativeWarehouses = (Array.from(
+          (data.inventory || [])
+            .filter(
+              (row: Row) =>
+                row.article_id === coverage.article_id &&
+                row.warehouse_id !== coverage.warehouse_id &&
+                number(row.available) > 0,
+            )
+            .reduce((groups: Map<string, Row>, row: Row) => {
+              const current = groups.get(row.warehouse_id) || {
+                warehouse_id: row.warehouse_id,
+                available: 0,
+                positions: [],
+              };
+              current.available += number(row.available);
+              current.positions.push(row);
+              groups.set(row.warehouse_id, current);
+              return groups;
+            }, new Map<string, Row>())
+            .values(),
+        ) as Row[])
+          .map((option: Row): Row => ({
+            ...option,
+            transferable: Math.max(
+              0,
+              number(option.available) - number(article.safety_stock),
+            ),
+            source: [...option.positions].sort(
+              (a: Row, b: Row) => number(b.available) - number(a.available),
+            )[0],
+          }))
+          .filter((option: Row) => option.transferable > 0)
+          .sort((a: Row, b: Row) => b.transferable - a.transferable);
+        const bestAlternative = alternativeWarehouses[0];
+        const incoming = number(
+          (data.planning || []).find((row: Row) => row.id === coverage.article_id)
+            ?.incoming,
+        );
+        const held = (data.inventory || [])
+          .filter(
+            (row: Row) =>
+              row.article_id === coverage.article_id &&
+              row.warehouse_id === coverage.warehouse_id &&
+              number(row.blocked) > 0,
+          )
+          .reduce((sum: number, row: Row) => sum + number(row.blocked), 0);
+        const go = (destination: string) => {
+          setCoverage(null);
+          navigate(destination);
+        };
+        const reviewReservations = () => {
+          const warehouse = warehouseById.get(coverage.warehouse_id) || {};
+          setCoverage(null);
+          navigate("Pedidos");
+          setOrderPlant(warehouse.center || "Todas");
+          setOrderWarehouse(coverage.warehouse_id || "Todos");
+          setOrderArticle(coverage.article_id || "Todos");
+          setOrderStatus("RESERVADO");
+        };
+        return (
+          <div className="overlay coverage-overlay" onClick={() => setCoverage(null)}>
+            <aside className="coverage-drawer" onClick={(event) => event.stopPropagation()}>
+              <button className="close" aria-label="Cerrar cobertura" onClick={() => setCoverage(null)}>
+                <X size={20} />
+              </button>
+              <span className="eyebrow">COBERTURA ATP</span>
+              <h2>Resolver disponibilidad de {coverage.article_id}</h2>
+              <p>
+                {coverage.article?.name || coverage.article} · {warehouseById.get(coverage.warehouse_id)?.name || coverage.warehouse_id}
+              </p>
+              <div className="coverage-summary">
+                <div><span>Stock físico</span><strong>{fmt(coverage.physical)}</strong></div>
+                <div><span>ATP local</span><strong>{fmt(coverage.available)}</strong></div>
+                <div><span>Meta operativa</span><strong>{fmt(number(coverage.physical) * 0.9)}</strong></div>
+                <div className="warning"><span>Brecha a 90%</span><strong>{fmt(gap)}</strong></div>
+              </div>
+              <p className="coverage-explanation">
+                El sistema prioriza cobertura operativa sin liberar calidad ni cancelar pedidos automáticamente.
+              </p>
+              <div className="coverage-options">
+                <article className={bestAlternative ? "recommended" : "disabled"}>
+                  <div>
+                    <span className="coverage-option-label">Traslado entre plantas</span>
+                    <strong>
+                      {bestAlternative
+                        ? `${warehouseById.get(bestAlternative.warehouse_id)?.name || bestAlternative.warehouse_id}: ${fmt(bestAlternative.transferable)} transferibles`
+                        : "No hay excedente transferible"}
+                    </strong>
+                    <small>Protege el stock de seguridad de la planta de origen.</small>
+                  </div>
+                  {bestAlternative && can("inventario") && (
+                    <button
+                      className="primary"
+                      onClick={() =>
+                        prepareCoverageTransfer(
+                          coverage,
+                          bestAlternative.source,
+                          Math.min(gap, bestAlternative.transferable),
+                        )
+                      }
+                    >
+                      Crear traslado <ArrowRight size={15} />
+                    </button>
+                  )}
+                </article>
+                <article>
+                  <div>
+                    <span className="coverage-option-label">Reservas activas</span>
+                    <strong>{fmt(coverage.reserved)} comprometidas</strong>
+                    <small>Revisa prioridad y pedido antes de cancelar; nunca se libera automáticamente.</small>
+                  </div>
+                  <button onClick={reviewReservations}>Revisar reservas</button>
+                </article>
+                <article className={incoming > 0 ? "" : "disabled"}>
+                  <div>
+                    <span className="coverage-option-label">Compra en tránsito</span>
+                    <strong>{incoming > 0 ? `${fmt(incoming)} por recibir` : "Sin compras confirmadas"}</strong>
+                    <small>Una recepción próxima puede recuperar ATP sin duplicar la compra.</small>
+                  </div>
+                  {incoming > 0 && <button onClick={() => go("Stock en tránsito")}>Revisar recepción</button>}
+                </article>
+                <article className={held > 0 ? "" : "disabled"}>
+                  <div>
+                    <span className="coverage-option-label">Inventario retenido</span>
+                    <strong>{held > 0 ? `${fmt(held)} en calidad` : "Sin stock retenido local"}</strong>
+                    <small>Calidad conserva la decisión independiente de liberar, bloquear o rechazar.</small>
+                  </div>
+                  {held > 0 && <button onClick={() => go("Lotes pendientes")}>Solicitar revisión</button>}
+                </article>
+                <article>
+                  <div>
+                    <span className="coverage-option-label">Escasez sin cobertura</span>
+                    <strong>Compra, producción o reposición</strong>
+                    <small>Úsalo cuando las alternativas anteriores no cubran la necesidad.</small>
+                  </div>
+                  <button onClick={() => go("Punto de reorden")}>Preparar reposición</button>
+                </article>
+              </div>
+            </aside>
+          </div>
+        );
+      })()}
       {detail && (
         <div className="overlay" onClick={() => setDetail(null)}>
           <aside className="drawer" onClick={(e) => e.stopPropagation()}>
             <button className="close" onClick={() => setDetail(null)}>
               <X size={20} />
             </button>
-            <span className="eyebrow">TRAZABILIDAD DEL LOTE</span>
-            <h2>{detail.lot_id}</h2>
-            <p>{detail.article}</p>
-            <Badge value={detail.quality} />
-            <div className="detail-stats">
-              <div>
-                Físico<strong>{fmt(detail.physical)}</strong>
-              </div>
-              <div>
-                Reservado<strong>{fmt(detail.reserved)}</strong>
-              </div>
-              <div>
-                Disponible<strong>{fmt(detail.available)}</strong>
-              </div>
-            </div>
-            <dl>
-              <dt>{detail.locations ? "Ubicaciones" : "Ubicación"}</dt>
-              <dd>{detail.locations || detail.location_id}</dd>
-              <dt>Rotación</dt>
-              <dd>{detail.policy}</dd>
-              <dt>Vencimiento</dt>
-              <dd>{date(detail.expiry)}</dd>
-              <dt>
-                {detail.lot_version ? "Versión del lote" : "Versión del saldo"}
-              </dt>
-              <dd>{detail.lot_version || detail.version}</dd>
-            </dl>
-            <h3>Historial de movimientos</h3>
-            <div className="timeline">
-              {data.movements
-                .filter((m: Row) => m.lot_id === detail.lot_id)
-                .map((m: Row) => (
-                  <div key={m.id}>
-                    <span className="timeline-dot" />
-                    <Badge value={m.type} />
-                    <strong>
-                      {fmt(m.quantity)} {detail.unit}
-                    </strong>
-                    <p>{m.reason}</p>
-                    <small>
-                      {date(m.created_at)} · {m.actor} ·{" "}
-                      {m.document_id || "Apertura"}
-                    </small>
-                  </div>
-                ))}
-            </div>
-            <h3>Relaciones de producción</h3>
-            {data.genealogy
-              .filter(
-                (g: Row) =>
-                  g.parent_lot === detail.lot_id ||
-                  g.child_lot === detail.lot_id,
-              )
-              .map((g: Row, i: number) => (
-                <p key={i}>
-                  {g.parent_lot} → {g.child_lot} · {g.document_id}
-                </p>
-              ))}
+            {detail.positions ? (
+              (() => {
+                const article = detail.article || {};
+                const affectedPositions = (detail.positions as Row[]).filter(
+                  (position: Row) => number(position.blocked) > 0,
+                );
+                const reason = (position: Row) =>
+                  position.quality !== "LIBERADO"
+                    ? statusLabel(position.quality)
+                    : position.expiry &&
+                        new Date(position.expiry).getTime() < Date.now()
+                      ? "VENCIDO"
+                      : "NO ELEGIBLE";
+                return (
+                  <>
+                    <span className="eyebrow">DETALLE DE LA POSICIÓN SKU–ALMACÉN</span>
+                    <h2>{article.name || detail.article_id}</h2>
+                    <p>
+                      {detail.article_id} · {warehouseById.get(detail.warehouse_id)?.name || detail.warehouse_id}
+                    </p>
+                    <span className={`dashboard-status severity-${detail.severity}`}>
+                      {detail.statusText}
+                    </span>
+                    <div className="detail-stats dashboard-detail-stats">
+                      <div>Físico<strong>{fmt(detail.physical)}</strong></div>
+                      <div>ATP<strong>{fmt(detail.available)}</strong></div>
+                      <div>ROP<strong>{fmt(detail.rop)}</strong></div>
+                    </div>
+                    {detail.issue === "affected" && (
+                      <>
+                        <h3>Desglose de unidades no elegibles</h3>
+                        <p className="detail-explanation">
+                          El total incluye cualquier lote que no puede prometerse: por cuarentena,
+                          bloqueo, rechazo o vencimiento. No significa que todas las unidades estén
+                          en cuarentena.
+                        </p>
+                        <div className="detail-breakdown">
+                          {affectedPositions.map((position: Row) => (
+                            <article key={`${position.lot_id}:${position.location_id}`}>
+                              <div>
+                                <strong>{position.lot_id}</strong>
+                                <small>
+                                  {locationById.get(position.location_id)?.name || position.location_id}
+                                </small>
+                              </div>
+                              <Badge value={reason(position)} />
+                              <strong>{fmt(position.blocked)} {article.unit || "u."}</strong>
+                            </article>
+                          ))}
+                          <footer>
+                            <span>Total no elegible</span>
+                            <strong>{fmt(detail.blocked)} {article.unit || "u."}</strong>
+                          </footer>
+                        </div>
+                      </>
+                    )}
+                    {detail.issue !== "affected" && (
+                      <>
+                        <h3>Diagnóstico</h3>
+                        <p className="detail-explanation">
+                          {detail.issue === "accuracy"
+                            ? `El último conteo presenta una diferencia de ${fmt(detail.countDifference)} ${article.unit || "u."} sobre una base de ${fmt(detail.countTheoretical)}.`
+                            : detail.issue === "atp"
+                              ? `Solo ${percent(detail.atpRatio)} del stock físico está disponible para prometer después de reservas y restricciones.`
+                              : detail.issue === "rop"
+                                ? `Faltan ${fmt(Math.max(0, number(detail.rop) - number(detail.available)))} ${article.unit || "u."} para alcanzar el punto de reorden.`
+                                : "La posición cumple actualmente las reglas operativas evaluadas."}
+                        </p>
+                        {detail.issue === "accuracy" && detail.countPositions?.length > 0 && (
+                          <div className="detail-breakdown count-breakdown">
+                            {detail.countPositions.map((count: Row) => (
+                              <article key={count.id}>
+                                <div>
+                                  <strong>{count.lot_id}</strong>
+                                  <small>{locationById.get(count.location_id)?.name || count.location_id}</small>
+                                </div>
+                                <span>
+                                  {fmt(count.theoretical)} → {fmt(count.counted)}
+                                </span>
+                                <strong>{number(count.difference) > 0 ? "+" : ""}{fmt(count.difference)} {article.unit || "u."}</strong>
+                              </article>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {detail.issue !== "ok" && (
+                      <button
+                        className="detail-primary-action"
+                        onClick={() => {
+                          setDetail(null);
+                          if (detail.issue === "atp") setCoverage(detail);
+                          else if (detail.issue === "accuracy") reviewDashboardCount(detail);
+                          else navigate(detail.actionPage);
+                        }}
+                      >
+                        {detail.actionLabel}
+                      </button>
+                    )}
+                  </>
+                );
+              })()
+            ) : (
+              <>
+                <span className="eyebrow">TRAZABILIDAD DEL LOTE</span>
+                <h2>{detail.lot_id}</h2>
+                <p>{detail.article}</p>
+                <Badge value={detail.quality} />
+                <div className="detail-stats">
+                  <div>Físico<strong>{fmt(detail.physical)}</strong></div>
+                  <div>Reservado<strong>{fmt(detail.reserved)}</strong></div>
+                  <div>Disponible<strong>{fmt(detail.available)}</strong></div>
+                </div>
+                <dl>
+                  <dt>{detail.locations ? "Ubicaciones" : "Ubicación"}</dt>
+                  <dd>{detail.locations || detail.location_id}</dd>
+                  <dt>Rotación</dt>
+                  <dd>{detail.policy}</dd>
+                  <dt>Vencimiento</dt>
+                  <dd>{date(detail.expiry)}</dd>
+                  <dt>{detail.lot_version ? "Versión del lote" : "Versión del saldo"}</dt>
+                  <dd>{detail.lot_version || detail.version}</dd>
+                </dl>
+                <h3>Historial de movimientos</h3>
+                <div className="timeline">
+                  {data.movements
+                    .filter((m: Row) => m.lot_id === detail.lot_id)
+                    .map((m: Row) => (
+                      <div key={m.id}>
+                        <span className="timeline-dot" />
+                        <Badge value={m.type} />
+                        <strong>{fmt(m.quantity)} {detail.unit}</strong>
+                        <p>{m.reason}</p>
+                        <small>{date(m.created_at)} · {m.actor} · {m.document_id || "Apertura"}</small>
+                      </div>
+                    ))}
+                </div>
+                <h3>Relaciones de producción</h3>
+                {data.genealogy
+                  .filter(
+                    (g: Row) =>
+                      g.parent_lot === detail.lot_id ||
+                      g.child_lot === detail.lot_id,
+                  )
+                  .map((g: Row, i: number) => (
+                    <p key={i}>{g.parent_lot} → {g.child_lot} · {g.document_id}</p>
+                  ))}
+              </>
+            )}
           </aside>
         </div>
       )}
@@ -3483,7 +4188,6 @@ function DashboardTrend({
     label: string;
     atp: number | null;
     accuracy: number | null;
-    fefo: number | null;
   }[];
 }) {
   const width = 640;
@@ -3500,7 +4204,7 @@ function DashboardTrend({
     top + ((max - Math.max(min, Math.min(max, value))) / (max - min)) * chartHeight;
   const x = (index: number) =>
     left + (chartWidth * index) / Math.max(1, points.length - 1);
-  type Metric = "atp" | "accuracy" | "fefo";
+  type Metric = "atp" | "accuracy";
   const series = (metric: Metric) =>
     points
       .map((point, index) => ({
@@ -3521,7 +4225,6 @@ function DashboardTrend({
   const metrics: { key: Metric; label: string; offset: number }[] = [
     { key: "atp", label: "ATP", offset: 3 },
     { key: "accuracy", label: "Exact.", offset: -7 },
-    { key: "fefo", label: "FEFO", offset: 14 },
   ];
   const hasData = metrics.some(({ key }) => series(key).length > 0);
   return (
@@ -3529,7 +4232,7 @@ function DashboardTrend({
       <svg
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label="Evolución de ATP, exactitud del inventario y cumplimiento FEFO frente a sus metas"
+        aria-label="Evolución de ATP y exactitud del inventario frente a sus metas"
       >
         {[80, 85, 90, 95, 100].map((tick) => (
           <g key={tick}>

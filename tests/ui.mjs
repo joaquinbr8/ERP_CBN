@@ -26,23 +26,135 @@ try {
     .waitFor();
   await page.locator('[aria-label="Cervecería Boliviana Nacional"]').waitFor();
   await page.getByRole("alert").waitFor();
-  await expect(page.locator(".dashboard-trend .trend-series")).toHaveCount(3);
+  await expect(page.locator(".dashboard-kpis .dashboard-kpi")).toHaveCount(4);
+  await expect(
+    page.locator(".dashboard-kpis").filter({ hasText: "Exactitud del inventario" }),
+  ).toContainText("98,1%");
+  await expect(page.locator(".dashboard-trend .trend-series")).toHaveCount(2);
   await expect(page.locator(".chart-legend")).toContainText("Exactitud");
-  await expect(page.locator(".chart-legend")).toContainText("FEFO");
+  await expect(page.locator(".chart-legend")).not.toContainText("FEFO");
   await page.getByLabel("Buscar SKU o producto").fill("EN-001");
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.getByRole("button", { name: "Limpiar", exact: true }).click();
   await page.getByRole("alert").waitFor();
+  await page.getByLabel("Filtrar por almacén").selectOption({ label: "Planta piloto" });
+  await page.getByRole("button", { name: "Aplicar", exact: true }).click();
+  await expect(
+    page.locator(".dashboard-kpis").filter({ hasText: "Exactitud del inventario" }),
+  ).toContainText("98,5%");
+  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
   await page.getByLabel("Filtrar por almacén").selectOption({ label: "Centro Santa Cruz" });
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   await expect(
     page.locator(".dashboard-kpis").filter({ hasText: "SKU que requieren reposición" }),
   ).toContainText("0 de 1");
+  await expect(
+    page.locator(".dashboard-kpis").filter({ hasText: "Exactitud del inventario" }),
+  ).toContainText("99,0%");
   await expect(page.locator(".dashboard-risk-card")).toContainText(
     "0 críticas de 1",
   );
+  await expect(
+    page.locator(".dashboard-kpis").filter({ hasText: "Disponibilidad ATP" }),
+  ).toContainText("77,1%");
+  await page.screenshot({
+    path: ".local/screenshots/02-dashboard-santa-cruz.png",
+    fullPage: true,
+  });
   await page.getByRole("button", { name: "Limpiar", exact: true }).click();
+  await page.getByLabel("Filtrar por almacén").selectOption({ label: "Planta Huari" });
+  await page.getByRole("button", { name: "Aplicar", exact: true }).click();
+  await expect(
+    page.locator(".dashboard-kpis").filter({ hasText: "Unidades afectadas" }),
+  ).toContainText("6,0%");
+  await expect(
+    page.locator(".dashboard-kpis").filter({ hasText: "SKU que requieren reposición" }),
+  ).toContainText("0 de 1");
+  await page.screenshot({
+    path: ".local/screenshots/02-dashboard-huari.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
+  await page.getByLabel("Filtrar por almacén").selectOption({ label: "Planta El Alto" });
+  await page.getByRole("button", { name: "Aplicar", exact: true }).click();
+  await expect(
+    page.locator(".dashboard-kpis").filter({ hasText: "Exactitud del inventario" }),
+  ).toContainText("93,1%");
+  await page.screenshot({
+    path: ".local/screenshots/02-dashboard-el-alto.png",
+    fullPage: true,
+  });
+  const accuracyRow = page.locator(".dashboard-priorities tbody tr").filter({
+    hasText: "PAC-0350",
+  });
+  await accuracyRow.getByRole("button", { name: "Revisar conteo" }).click();
+  await expect(page.getByRole("heading", { name: "Conteos y diferencias" })).toBeVisible();
+  await expect(page.getByLabel("Filtrar conteos por planta")).toHaveValue("La Paz");
+  await expect(page.getByLabel("Filtrar conteos por almacén")).toHaveValue("EL-ALTO");
+  await expect(page.locator(".count-table")).toContainText("EA-261001");
+  await expect(page.locator(".count-table")).toContainText("-25");
+  await page.screenshot({
+    path: ".local/screenshots/02-conteos-atencion-el-alto.png",
+    fullPage: true,
+  });
+  await page.locator(".count-table").getByRole("button", { name: "Iniciar reconteo" }).click();
+  await expect(page.getByRole("heading", { name: "Registrar reconteo de verificación" })).toBeVisible();
+  await expect(page.getByLabel("Lote")).toHaveValue("EA-261001");
+  await expect(page.getByLabel("Ubicación")).toHaveValue("EA-PT-01");
+  await page.getByRole("button", { name: "Cancelar" }).click();
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
+  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Inventario y acciones prioritarias" }),
+  ).toBeVisible();
+  await expect(page.locator(".dashboard-priorities tbody tr")).toHaveCount(6);
+  await expect(
+    page.locator(".dashboard-priorities").getByRole("button", { name: "Ver detalle" }).first(),
+  ).toBeVisible();
+  const affectedRow = page.locator(".dashboard-priorities tbody tr").filter({
+    hasText: "72 caja no elegibles",
+  });
+  await affectedRow.getByRole("button", { name: "Ver detalle" }).click();
+  await expect(page.getByText("DETALLE DE LA POSICIÓN SKU–ALMACÉN", { exact: true })).toBeVisible();
+  await expect(page.locator(".detail-breakdown")).toContainText("PT-2603");
+  await expect(page.locator(".detail-breakdown")).toContainText("CUARENTENA");
+  await expect(page.locator(".detail-breakdown")).toContainText("60 caja");
+  await expect(page.locator(".detail-breakdown")).toContainText("PT-2604");
+  await expect(page.locator(".detail-breakdown")).toContainText("VENCIDO");
+  await expect(page.locator(".detail-breakdown footer")).toContainText("72 caja");
+  await page.screenshot({
+    path: ".local/screenshots/02-dashboard-detalle-no-elegible.png",
+    fullPage: true,
+  });
+  await page.locator(".drawer").getByRole("button").first().click();
+  await expect(page.locator(".dashboard-priorities")).toContainText("Resolver cobertura");
+  await page.locator(".dashboard-priorities").getByRole("button", { name: "Resolver cobertura" }).click();
+  await expect(page.getByText("COBERTURA ATP", { exact: true })).toBeVisible();
+  await expect(page.locator(".coverage-options")).toContainText("Traslado entre plantas");
+  await expect(page.locator(".coverage-options")).toContainText("Reservas activas");
+  await page.screenshot({
+    path: ".local/screenshots/02-dashboard-cobertura-atp.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: /Crear traslado/ }).click();
+  await expect(page.getByRole("heading", { name: "Traslado para recuperar cobertura ATP" })).toBeVisible();
+  await expect(page.getByLabel("Lote")).toHaveValue("TQ-PAC-COV");
+  await page.getByRole("button", { name: "Cancelar" }).click();
+  await page.locator(".dashboard-priorities").getByRole("button", { name: "Resolver cobertura" }).click();
+  await page.getByRole("button", { name: "Revisar reservas" }).click();
+  await expect(page.getByRole("heading", { name: "Pedidos" })).toBeVisible();
+  await expect(page.getByLabel("Filtrar pedidos por planta")).toHaveValue("Santa Cruz");
+  await expect(page.getByLabel("Filtrar pedidos por almacén")).toHaveValue("SANTA-CRUZ");
+  await expect(page.getByLabel("Filtrar pedidos por artículo")).toHaveValue("PAC-0620");
+  await expect(page.getByLabel("Filtrar pedidos por estado")).toHaveValue("RESERVADO");
+  await expect(page.locator(".order-filters")).toContainText("550 caja comprometidas");
+  await expect(page.locator(".panel tbody tr")).toHaveCount(2);
+  await page.screenshot({
+    path: ".local/screenshots/02-dashboard-reservas-contextuales.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   await page.screenshot({
     path: ".local/screenshots/02-dashboard.png",
     fullPage: true,
@@ -55,6 +167,14 @@ try {
     .getByRole("button", { name: "Revisar reposición" })
     .click();
   await page.getByRole("heading", { name: "Punto de reorden" }).waitFor();
+  await expect(page.getByLabel("Filtrar ROP por planta")).toBeVisible();
+  await page.getByLabel("Filtrar ROP por planta").selectOption("Santa Cruz");
+  await expect(page.getByLabel("Filtrar ROP por almacén")).toContainText("Centro Santa Cruz");
+  await page.screenshot({
+    path: ".local/screenshots/02b-reposicion-filtro-santa-cruz.png",
+    fullPage: true,
+  });
+  await page.getByLabel("Filtrar ROP por planta").selectOption("Todas");
   await expect(page.locator(".rop-action-banner")).toContainText(
     "artículos requieren intervención",
   );
