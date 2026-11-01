@@ -101,7 +101,7 @@ class Api {
       lots: "SELECT * FROM lots ORDER BY received_at DESC",
       documents: "SELECT * FROM documents ORDER BY created_at DESC LIMIT 300",
       reservations: "SELECT * FROM reservations ORDER BY document_id",
-      movements: "SELECT * FROM movements ORDER BY created_at DESC LIMIT 500",
+      movements: "SELECT * FROM movements ORDER BY created_at DESC LIMIT 5000",
       counts: "SELECT * FROM counts ORDER BY created_at DESC",
       genealogy: "SELECT * FROM genealogy",
       suggestions: "SELECT * FROM suggestions ORDER BY created_at DESC",

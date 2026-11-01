@@ -783,6 +783,10 @@ main {
   color: #9a5200;
   background: #fff1cc;
 }
+.dashboard-kpi-chip.neutral {
+  color: #536275;
+  background: #edf1f5;
+}
 .dashboard-kpi-track {
   position: relative;
   height: 5px;

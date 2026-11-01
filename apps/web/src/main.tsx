@@ -1073,6 +1073,11 @@ function App() {
       (article: Row) => [article.id, article] as [string, Row],
     ),
   );
+  const documentById = new Map<string, Row>(
+    (data.documents || []).map(
+      (document: Row) => [document.id, document] as [string, Row],
+    ),
+  );
   const dashboardPlants = [
     ...new Set(
       (data.warehouses || [])
@@ -1210,11 +1215,90 @@ function App() {
   const dashboardArticleIds = new Set(
     dashboardArticles.map((article: Row) => article.id),
   );
-  const dashboardInventory = inv.filter(
-    (row) =>
-      dashboardArticleIds.has(row.article_id) &&
-      dashboardWarehouseIds.has(row.warehouse_id),
+  const dashboardSnapshotEnd = new Date(
+    dashboardFilters.end + "T23:59:59.999",
   );
+  const dashboardSnapshotEndTime = dashboardSnapshotEnd.getTime();
+  const lotQualityAt = (lotId: string, pointTime: number) => {
+    const lot = lotById.get(lotId) || {};
+    const decisions = (data.qualityHistory || data.audit || [])
+      .filter(
+        (event: Row) =>
+          event.action === "quality.decision" && event.detail?.lot === lotId,
+      )
+      .sort(
+        (a: Row, b: Row) =>
+          new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+      );
+    let quality = decisions[0]?.detail?.previous || lot.quality || "CUARENTENA";
+    for (const decision of decisions) {
+      if (new Date(decision.created_at).getTime() > pointTime) break;
+      quality = decision.detail?.quality || quality;
+    }
+    return quality;
+  };
+  const reservedAt = (lotId: string, locationId: string, pointTime: number) =>
+    (data.reservations || [])
+      .filter((reservation: Row) => {
+        const document = documentById.get(reservation.document_id);
+        return (
+          reservation.status === "ACTIVA" &&
+          reservation.lot_id === lotId &&
+          reservation.location_id === locationId &&
+          document &&
+          new Date(document.created_at).getTime() <= pointTime
+        );
+      })
+      .reduce(
+        (total: number, reservation: Row) =>
+          total + number(reservation.quantity),
+        0,
+      );
+  const dashboardInventory: Row[] = inv
+    .filter(
+      (row) =>
+        dashboardArticleIds.has(row.article_id) &&
+        dashboardWarehouseIds.has(row.warehouse_id),
+    )
+    .map((row: Row): Row => {
+      const physical = (data.movements || [])
+        .filter(
+          (movement: Row) =>
+            movement.lot_id === row.lot_id &&
+            movement.location_id === row.location_id &&
+            new Date(movement.created_at).getTime() <= dashboardSnapshotEndTime,
+        )
+        .reduce(
+          (total: number, movement: Row) =>
+            total + number(movement.quantity),
+          0,
+        );
+      const lot = lotById.get(row.lot_id) || {};
+      const qualityAtClose = lotQualityAt(
+        row.lot_id,
+        dashboardSnapshotEndTime,
+      );
+      const reserved = Math.min(
+        Math.max(0, physical),
+        reservedAt(row.lot_id, row.location_id, dashboardSnapshotEndTime),
+      );
+      const eligible =
+        qualityAtClose === "LIBERADO" &&
+        (!lot.expiry ||
+          new Date(
+            String(lot.expiry).slice(0, 10) + "T23:59:59.999",
+          ).getTime() >=
+            dashboardSnapshotEndTime);
+      return {
+        ...row,
+        quality: qualityAtClose,
+        physical: Math.max(0, physical),
+        reserved,
+        available: eligible ? Math.max(0, physical - reserved) : 0,
+        blocked: eligible ? 0 : Math.max(0, physical),
+      };
+    })
+    .filter((row: Row) => number(row.physical) > 0);
   const dashboardLotIds = new Set(
     dashboardInventory.map((row) => row.lot_id),
   );
@@ -1222,6 +1306,7 @@ function App() {
     (total, row) => total + number(row.physical),
     0,
   );
+  const inventoryHasData = dashboardPhysical > 0;
   const dashboardAvailable = dashboardInventory.reduce(
     (total, row) => total + number(row.available),
     0,
@@ -1235,7 +1320,7 @@ function App() {
     : 0;
   const atpPct = dashboardPhysical
     ? (dashboardAvailable / dashboardPhysical) * 100
-    : 100;
+    : 0;
   const dashboardPlanning = Array.from(
     dashboardInventory
       .reduce((groups: Map<string, Row>, position: Row) => {
@@ -1290,6 +1375,7 @@ function App() {
     const location = locationById.get(row.location_id);
     return (
       row.status === "APROBADO" &&
+      new Date(row.created_at).getTime() <= dashboardSnapshotEndTime &&
       dashboardLotIds.has(row.lot_id) &&
       location &&
       dashboardWarehouseIds.has(location.warehouse_id)
@@ -1316,11 +1402,10 @@ function App() {
       total + Math.abs(number(row.counted) - number(row.theoretical)),
     0,
   );
-  const accuracyPct = countedTheoretical
+  const accuracyHasData = countedTheoretical > 0;
+  const accuracyPct = accuracyHasData
     ? Math.max(0, 100 - (countedDifference / countedTheoretical) * 100)
-    : dashboardPhysical
-      ? Math.max(0, 100 - (reconciliationDifference / dashboardPhysical) * 100)
-      : 100;
+    : 0;
   const dashboardWarehouseRisk: Row[] = (data.warehouses || [])
     .filter((warehouse: Row) => dashboardWarehouseIds.has(warehouse.id))
     .map((warehouse: Row) => {
@@ -1434,9 +1519,9 @@ function App() {
       .filter((movement: Row) => {
         if (new Date(movement.created_at).getTime() > pointDate.getTime())
           return false;
-        const lot = lotById.get(movement.lot_id);
+        const lot = lotById.get(movement.lot_id) || {};
         return (
-          lot?.quality === "LIBERADO" &&
+          lotQualityAt(movement.lot_id, pointDate.getTime()) === "LIBERADO" &&
           (!lot.expiry || new Date(lot.expiry).getTime() >= pointDate.getTime())
         );
       })
@@ -1449,9 +1534,18 @@ function App() {
         )
         .map((movement: Row) => movement.lot_id),
     );
-    const reservedAt = dashboardInventory
-      .filter((row) => presentLots.has(row.lot_id) && number(row.available) > 0)
-      .reduce((total, row) => total + number(row.reserved), 0);
+    const reservedAtPoint = inv
+      .filter(
+        (row: Row) =>
+          presentLots.has(row.lot_id) &&
+          dashboardArticleIds.has(row.article_id) &&
+          dashboardWarehouseIds.has(row.warehouse_id),
+      )
+      .reduce(
+        (total: number, row: Row) =>
+          total + reservedAt(row.lot_id, row.location_id, pointDate.getTime()),
+        0,
+      );
     const countHistoryAt = dashboardCountHistory.filter(
       (row: Row) =>
         new Date(row.created_at).getTime() <= pointDate.getTime(),
@@ -1482,7 +1576,7 @@ function App() {
       atp: physicalAt
         ? Math.max(
             0,
-            Math.min(100, ((eligibleAt - reservedAt) / physicalAt) * 100),
+            Math.min(100, ((eligibleAt - reservedAtPoint) / physicalAt) * 100),
           )
         : null,
       accuracy: theoreticalAt
@@ -1731,7 +1825,7 @@ function App() {
     dashboardLow.length - dashboardLowPriority.length,
   );
   const dashboardAlert = ([
-    accuracyPct < 95
+    accuracyHasData && accuracyPct < 95
       ? {
           key: "accuracy",
           severity: accuracyPct < 90 ? 2 : 1,
@@ -1746,7 +1840,7 @@ function App() {
           tracking: "Reconteo y autorización del ajuste",
         }
       : null,
-    atpPct < 90
+    inventoryHasData && atpPct < 90
       ? {
           key: "atp",
           severity: atpPct < 85 ? 2 : 1,
@@ -1761,7 +1855,7 @@ function App() {
           tracking: "Cobertura, reservas y traslados",
         }
       : null,
-    lowPct > 10
+    dashboardPlanning.length > 0 && lowPct > 10
       ? {
           key: "rop-" + dashboardLow.map((row: Row) => row.id).join("-"),
           severity: lowPct > 20 ? 2 : 1,
@@ -1776,7 +1870,7 @@ function App() {
           tracking: "Sugerencia y solicitud de compra",
         }
       : null,
-    affectedUnitsPct > 5
+    inventoryHasData && affectedUnitsPct > 5
       ? {
           key: "affected",
           severity: affectedUnitsPct > 8 ? 2 : 1,
@@ -2326,8 +2420,8 @@ function App() {
               <span className="eyebrow">CONTROL OPERATIVO · INVENTARIOS</span>
               <h1>Sistema Inteligente de Gestión de Inventarios</h1>
               <p>
-                Estado ejecutivo del stock, la disponibilidad y el riesgo de
-                reposición.
+                Estado ejecutivo del stock, la disponibilidad y el riesgo al
+                cierre del {date(dashboardFilters.end)}.
               </p>
             </div>
             <div className="dashboard-updated">
@@ -2340,26 +2434,53 @@ function App() {
             className="dashboard-filters"
             onSubmit={(event) => {
               event.preventDefault();
-              const normalized =
-                dashboardDraft.start <= dashboardDraft.end
-                  ? dashboardDraft
-                  : {
-                      ...dashboardDraft,
-                      start: dashboardDraft.end,
-                      end: dashboardDraft.start,
-                    };
-              setDashboardDraft(normalized);
-              setDashboardFilters(normalized);
+              const startTime = new Date(
+                dashboardDraft.start + "T00:00:00",
+              ).getTime();
+              const endTime = new Date(
+                dashboardDraft.end + "T23:59:59.999",
+              ).getTime();
+              const todayEnd = new Date(
+                isoDay(new Date()) + "T23:59:59.999",
+              ).getTime();
+              if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) {
+                setNotice({ text: "Selecciona dos fechas válidas.", error: true });
+                return;
+              }
+              if (startTime > endTime) {
+                setNotice({
+                  text: "La fecha inicial no puede ser posterior a la fecha final.",
+                  error: true,
+                });
+                return;
+              }
+              if (endTime > todayEnd) {
+                setNotice({
+                  text: "La fecha de cierre no puede estar en el futuro.",
+                  error: true,
+                });
+                return;
+              }
+              if (endTime - startTime > 366 * 86400000) {
+                setNotice({
+                  text: "El periodo máximo permitido es de 366 días.",
+                  error: true,
+                });
+                return;
+              }
+              setDashboardFilters(dashboardDraft);
               setDismissedAlert("");
             }}
           >
             <label className="date-filter">
-              Rango de actividad
+              Periodo de análisis
               <span>
                 <CalendarDays size={14} />
                 <input
                   aria-label="Fecha inicial del dashboard"
                   type="date"
+                  required
+                  max={isoDay(new Date())}
                   value={dashboardDraft.start}
                   onChange={(event) =>
                     setDashboardDraft({
@@ -2372,6 +2493,8 @@ function App() {
                 <input
                   aria-label="Fecha final del dashboard"
                   type="date"
+                  required
+                  max={isoDay(new Date())}
                   value={dashboardDraft.end}
                   onChange={(event) =>
                     setDashboardDraft({
@@ -2482,19 +2605,7 @@ function App() {
                 setDismissedAlert("");
               }}
             >
-              Limpiar
-            </button>
-            <button
-              className="dashboard-reset"
-              type="button"
-              onClick={() => {
-                const reset = initialDashboardFilters();
-                setDashboardDraft(reset);
-                setDashboardFilters(reset);
-                setDismissedAlert("");
-              }}
-            >
-              <RefreshCw size={13} /> Restablecer
+              Limpiar filtros
             </button>
           </form>
 
@@ -2535,10 +2646,10 @@ function App() {
           <div className="dashboard-kpis">
             <DashboardKpi
               label="Unidades afectadas"
-              value={percent(affectedUnitsPct)}
+              value={inventoryHasData ? percent(affectedUnitsPct) : "Sin datos"}
               goal="Meta ≤ 5%"
-              comparison={`${points(affectedUnitsPct - 5)} vs. meta`}
-              status={affectedUnitsPct <= 5 ? "good" : "warning"}
+              comparison={inventoryHasData ? `${points(affectedUnitsPct - 5)} vs. meta` : "Sin inventario al cierre"}
+              status={!inventoryHasData ? "neutral" : affectedUnitsPct <= 5 ? "good" : "warning"}
               icon={Package}
               help="Porcentaje del stock físico que está bloqueado, vencido o retenido y no puede utilizarse."
               progress={Math.min(100, (affectedUnitsPct / 5) * 100)}
@@ -2546,10 +2657,10 @@ function App() {
             />
             <DashboardKpi
               label="Disponibilidad ATP"
-              value={percent(atpPct)}
+              value={inventoryHasData ? percent(atpPct) : "Sin datos"}
               goal="Meta ≥ 90%"
-              comparison={`${points(atpPct - 90)} vs. meta`}
-              status={atpPct >= 90 ? "good" : "warning"}
+              comparison={inventoryHasData ? `${points(atpPct - 90)} vs. meta` : "Sin inventario al cierre"}
+              status={!inventoryHasData ? "neutral" : atpPct >= 90 ? "good" : "warning"}
               icon={Boxes}
               help="ATP es el inventario liberado y vigente que queda disponible después de descontar las reservas activas."
               progress={atpPct}
@@ -2560,8 +2671,8 @@ function App() {
               value={`${dashboardLow.length} de ${dashboardPlanning.length}`}
               secondary={`SKU · ${percent(lowPct)}`}
               goal="Meta ≤ 10% de SKU evaluados"
-              comparison={`${points(lowPct - 10)} vs. meta`}
-              status={lowPct <= 10 ? "good" : "warning"}
+              comparison={dashboardPlanning.length ? `${points(lowPct - 10)} vs. meta` : "Sin posiciones al cierre"}
+              status={!dashboardPlanning.length ? "neutral" : lowPct <= 10 ? "good" : "warning"}
               icon={Activity}
               help="ROP es el punto de reorden: demanda diaria × plazo de reposición + stock de seguridad."
               progress={Math.min(100, lowPct)}
@@ -2570,10 +2681,10 @@ function App() {
             />
             <DashboardKpi
               label="Exactitud del inventario"
-              value={percent(accuracyPct)}
+              value={accuracyHasData ? percent(accuracyPct) : "Sin datos"}
               goal="Meta ≥ 95%"
-              comparison={`${points(accuracyPct - 95)} vs. meta`}
-              status={accuracyPct >= 95 ? "good" : "warning"}
+              comparison={accuracyHasData ? `${points(accuracyPct - 95)} vs. meta` : "Sin conteos aprobados al cierre"}
+              status={!accuracyHasData ? "neutral" : accuracyPct >= 95 ? "good" : "warning"}
               icon={ShieldCheck}
               help="Exactitud = 100% menos la diferencia absoluta entre el saldo teórico y el último conteo aprobado."
               progress={accuracyPct}
@@ -4389,7 +4500,11 @@ function DashboardKpi({
         <span>{goal}</span>
         <span className={`dashboard-kpi-chip ${status}`}>
           {status === "good" ? <CheckCircle2 size={11} /> : <Clock3 size={11} />}
-          {status === "good" ? "Cumple" : "Atención"}
+          {status === "neutral"
+            ? "Sin datos"
+            : status === "good"
+              ? "Cumple"
+              : "Atención"}
         </span>
       </div>
       <div className="dashboard-kpi-track" aria-hidden="true">

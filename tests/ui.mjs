@@ -37,6 +37,29 @@ try {
   await expect(page.locator(".trend-current-values")).toContainText("Meta 95%");
   await expect(page.getByRole("alert")).toContainText("Responsable:");
   await expect(page.getByRole("alert")).toContainText("Seguimiento:");
+  await expect(
+    page.getByRole("button", { name: "Limpiar filtros", exact: true }),
+  ).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Restablecer", exact: true })).toHaveCount(0);
+  await page.getByLabel("Fecha inicial del dashboard").fill("2026-09-01");
+  await page.getByLabel("Fecha final del dashboard").fill("2026-09-30");
+  await page.getByRole("button", { name: "Aplicar", exact: true }).click();
+  await expect(
+    page.locator(".dashboard-kpis").filter({ hasText: "Disponibilidad ATP" }),
+  ).toContainText("100,0%");
+  await expect(
+    page.locator(".dashboard-kpis").filter({ hasText: "SKU que requieren reposición" }),
+  ).toContainText("1 de 24");
+  await expect(
+    page.locator(".dashboard-kpis").filter({ hasText: "Exactitud del inventario" }),
+  ).toContainText("Sin datos");
+  await expect(page.locator(".dashboard-risk-card")).toContainText("1 críticas de 24");
+  await expect(page.locator(".dashboard-priorities tbody tr")).toHaveCount(1);
+  await page.screenshot({
+    path: ".local/screenshots/02-dashboard-historico-septiembre.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Limpiar filtros", exact: true }).click();
   await page.getByLabel("Filtrar por planta").selectOption({ label: "La Paz" });
   await expect(page.getByLabel("Filtrar por almacén").locator("option")).toHaveCount(5);
   await expect(page.getByLabel("Filtrar por categoría")).toContainText("Envases");
@@ -70,18 +93,18 @@ try {
   assert.ok(santaCruzCategories.includes("Envases"));
   assert.ok(santaCruzCategories.includes("Repuestos"));
   assert.ok(!santaCruzCategories.includes("Materia prima"));
-  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
+  await page.getByRole("button", { name: "Limpiar filtros", exact: true }).click();
   await page.getByLabel("Buscar SKU o producto").fill("EN-001");
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   await expect(page.getByRole("alert")).toBeVisible();
-  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
+  await page.getByRole("button", { name: "Limpiar filtros", exact: true }).click();
   await page.getByRole("alert").waitFor();
   await page.getByLabel("Filtrar por almacén").selectOption({ label: "Producto terminado piloto" });
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   await expect(
     page.locator(".dashboard-kpis").filter({ hasText: "Exactitud del inventario" }),
   ).toContainText("98,6%");
-  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
+  await page.getByRole("button", { name: "Limpiar filtros", exact: true }).click();
   await page.getByLabel("Filtrar por almacén").selectOption({ label: "Producto terminado Santa Cruz" });
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   await expect(
@@ -100,7 +123,7 @@ try {
     path: ".local/screenshots/02-dashboard-santa-cruz.png",
     fullPage: true,
   });
-  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
+  await page.getByRole("button", { name: "Limpiar filtros", exact: true }).click();
   await page.getByLabel("Filtrar por almacén").selectOption({ label: "Producto terminado Huari" });
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   await expect(
@@ -113,7 +136,7 @@ try {
     path: ".local/screenshots/02-dashboard-huari.png",
     fullPage: true,
   });
-  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
+  await page.getByRole("button", { name: "Limpiar filtros", exact: true }).click();
   await page.getByLabel("Filtrar por almacén").selectOption({ label: "Producto terminado El Alto" });
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   await expect(
@@ -142,7 +165,7 @@ try {
   await expect(page.getByLabel("Ubicación")).toHaveValue("EA-PT-01");
   await page.getByRole("button", { name: "Cancelar" }).click();
   await page.getByRole("button", { name: "Dashboard", exact: true }).click();
-  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
+  await page.getByRole("button", { name: "Limpiar filtros", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Inventario y acciones prioritarias" }),
   ).toBeVisible();
@@ -201,7 +224,7 @@ try {
     .click();
   await expect(page.getByLabel("Filtrar por planta")).toHaveValue("La Paz");
   await expect(page.getByLabel("Filtrar por almacén")).toHaveValue("Todos");
-  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
+  await page.getByRole("button", { name: "Limpiar filtros", exact: true }).click();
   await page.screenshot({
     path: ".local/screenshots/02-dashboard.png",
     fullPage: true,
@@ -223,7 +246,7 @@ try {
   await expect(page.locator(".rop-panel tbody tr")).toContainText("Bock · botella 620 ml");
   await expect(page.locator(".rop-panel tbody tr")).toContainText("480");
   await page.getByRole("button", { name: "Dashboard", exact: true }).click();
-  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
+  await page.getByRole("button", { name: "Limpiar filtros", exact: true }).click();
   await page
     .getByRole("alert")
     .getByRole("button", { name: "Revisar reposición" })
