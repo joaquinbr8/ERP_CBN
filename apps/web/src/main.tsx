@@ -248,6 +248,7 @@ function App() {
   const [orderStatus, setOrderStatus] = useState("Todos");
   const [ropPlant, setRopPlant] = useState("Todas");
   const [ropWarehouse, setRopWarehouse] = useState("Todos");
+  const [ropArticle, setRopArticle] = useState("Todos");
   const can = (p: string) =>
     data?.user?.permissions.includes("*") ||
     data?.user?.permissions.includes(p);
@@ -284,6 +285,7 @@ function App() {
     setOrderStatus("Todos");
     setRopPlant("Todas");
     setRopWarehouse("Todos");
+    setRopArticle("Todos");
     if (p === "Punto de reorden" || p === "Indicadores")
       setReplenishmentView("attention");
     setMobile(false);
@@ -387,12 +389,14 @@ function App() {
     return candidate;
   }
   function prepareReplenishmentRequest(row: Row) {
+    const articleId = row.articleId || row.article_id || row.id;
+    const warehouseName = row.warehouseName || warehouseById.get(row.warehouse_id)?.name;
     show(
       "request.create",
       "Solicitud de compra sugerida",
       [
         field("id", "Solicitud", "text", reference("SC")),
-        { ...select("articleId", "Artículo", "articles"), value: row.id },
+        { ...select("articleId", "Artículo", "articles"), value: articleId },
         {
           ...field("quantity", "Cantidad mínima sugerida", "number", row.gap),
           min: 0.001,
@@ -402,12 +406,20 @@ function App() {
           "reason",
           "Necesidad / justificación",
           "text",
-          `Reposición por brecha ROP: posición ${fmt(row.position)}, ROP ${fmt(row.rop)}, brecha ${fmt(row.gap)}.`,
+          `Reposición para ${warehouseName || "el alcance seleccionado"} por brecha ROP: posición ${fmt(row.position)}, ROP ${fmt(row.rop)}, brecha ${fmt(row.gap)}.`,
         ),
       ],
       {},
-      `La brecha mínima actual de ${row.name} es ${fmt(row.gap)} ${row.unit}. Esta cantidad recupera el umbral ROP; no reemplaza la decisión de lote económico ni las restricciones de compra.`,
+      `La brecha mínima actual de ${row.name} en ${warehouseName || "el alcance seleccionado"} es ${fmt(row.gap)} ${row.unit}. Esta cantidad recupera el umbral ROP; no reemplaza la decisión de lote económico ni las restricciones de compra.`,
     );
+  }
+  function openRopForRow(row: Row) {
+    const warehouse = warehouseById.get(row.warehouse_id);
+    navigate("Punto de reorden");
+    setRopPlant(warehouse?.center || "Todas");
+    setRopWarehouse(row.warehouse_id || "Todos");
+    setRopArticle(row.article_id || row.articleId || row.id || "Todos");
+    setReplenishmentView("attention");
   }
   function create(kind: string) {
     switch (kind) {
@@ -1524,6 +1536,51 @@ function App() {
         : issue === "ok"
           ? 0
           : 1;
+    const pendingCount = (data.counts || []).find(
+      (row: Row) =>
+        positionKeys.has(`${row.lot_id}:${row.location_id}`) &&
+        row.status === "PENDIENTE",
+    );
+    const openSuggestion = (data.suggestions || []).find(
+      (row: Row) =>
+        row.article_id === group.article_id && row.status === "ABIERTA",
+    );
+    const activeCoverage = (data.documents || []).find(
+      (row: Row) =>
+        ["TRASLADO", "COMPRA"].includes(row.kind) &&
+        !["CERRADA", "RECIBIDA", "CANCELADA"].includes(row.status) &&
+        row.data?.articleId === group.article_id,
+    );
+    const workflow =
+      issue === "accuracy"
+        ? pendingCount
+          ? "Reconteo pendiente"
+          : "Reconteo por iniciar"
+        : issue === "affected"
+          ? "Decisión de calidad pendiente"
+          : issue === "atp"
+            ? activeCoverage
+              ? `${activeCoverage.kind === "TRASLADO" ? "Traslado" : "Compra"} ${statusLabel(activeCoverage.status).toLowerCase()}`
+              : "Cobertura por resolver"
+            : issue === "rop"
+              ? openSuggestion
+                ? "Sugerencia abierta"
+                : "Solicitud por preparar"
+              : issue === "expiry"
+                ? "Secuencia FEFO pendiente"
+                : "Sin acción pendiente";
+    const owner =
+      issue === "accuracy"
+        ? "Jefatura de Almacén"
+        : issue === "affected"
+          ? "Equipo de Calidad"
+          : issue === "atp"
+            ? "Planificación y Almacenes"
+            : issue === "rop"
+              ? "Compras y Almacén"
+              : issue === "expiry"
+                ? "Despacho"
+                : "—";
     return {
       ...nearest,
       id: group.id,
@@ -1544,6 +1601,8 @@ function App() {
       daysToExpiry,
       issue,
       severity,
+      workflow,
+      owner,
       statusText:
         issue === "accuracy"
           ? `Diferencia de conteo · ${percent(countAccuracy)}`
@@ -1586,12 +1645,20 @@ function App() {
       number(a.atpRatio) - number(b.atpRatio) ||
       number(b.countDifference) - number(a.countDifference),
   );
+  const dashboardIsConsolidated =
+    dashboardFilters.plant === "Todas" &&
+    dashboardFilters.warehouse === "Todos" &&
+    dashboardFilters.category === "Todas" &&
+    !dashboardFilters.sku.trim();
+  const dashboardRowCandidates = dashboardIsConsolidated
+    ? dashboardRowsSorted.filter((row: Row) => row.severity > 0)
+    : dashboardRowsSorted;
   const dashboardRows: Row[] = [];
   for (const issue of ["accuracy", "affected", "atp", "rop"]) {
-    const row = dashboardRowsSorted.find((item: Row) => item.issue === issue);
+    const row = dashboardRowCandidates.find((item: Row) => item.issue === issue);
     if (row) dashboardRows.push(row);
   }
-  for (const row of dashboardRowsSorted) {
+  for (const row of dashboardRowCandidates) {
     if (dashboardRows.length >= 6) break;
     if (!dashboardRows.some((item) => item.id === row.id)) dashboardRows.push(row);
   }
@@ -1620,6 +1687,8 @@ function App() {
           gap: `BRECHA: ${points(accuracyPct - 95)}`,
           action: "Revisar conteos",
           page: "Conteos y diferencias",
+          owner: "Jefatura de Almacén",
+          tracking: "Reconteo y autorización del ajuste",
         }
       : null,
     atpPct < 90
@@ -1633,6 +1702,8 @@ function App() {
           gap: `BRECHA: ${points(atpPct - 90)}`,
           action: "Revisar existencias",
           page: "Existencias",
+          owner: "Planificación y Almacenes",
+          tracking: "Cobertura, reservas y traslados",
         }
       : null,
     lowPct > 10
@@ -1649,6 +1720,8 @@ function App() {
           gap: `${percent(lowPct)} DEL PORTAFOLIO`,
           action: "Revisar reposición",
           page: "Punto de reorden",
+          owner: "Compras y Almacén",
+          tracking: "Sugerencia y solicitud de compra",
         }
       : null,
     affectedUnitsPct > 5
@@ -1662,6 +1735,8 @@ function App() {
           gap: `EXCESO: ${points(affectedUnitsPct - 5)}`,
           action: "Revisar calidad",
           page: "Lotes pendientes",
+          owner: "Equipo de Calidad",
+          tracking: "Liberación, bloqueo o rechazo",
         }
       : null,
   ]
@@ -2378,6 +2453,9 @@ function App() {
               <div>
                 <strong>ATENCIÓN · {dashboardAlert.title}</strong>
                 <p>{dashboardAlert.detail}</p>
+                <small className="dashboard-alert-followup">
+                  Responsable: {dashboardAlert.owner} · Seguimiento: {dashboardAlert.tracking}
+                </small>
               </div>
               <span className="dashboard-alert-gap">{dashboardAlert.gap}</span>
               <span className="dashboard-alert-priority">
@@ -2406,6 +2484,7 @@ function App() {
               comparison={`${points(affectedUnitsPct - 5)} vs. meta`}
               status={affectedUnitsPct <= 5 ? "good" : "warning"}
               icon={Package}
+              help="Porcentaje del stock físico que está bloqueado, vencido o retenido y no puede utilizarse."
               progress={Math.min(100, (affectedUnitsPct / 5) * 100)}
               inverse
             />
@@ -2416,6 +2495,7 @@ function App() {
               comparison={`${points(atpPct - 90)} vs. meta`}
               status={atpPct >= 90 ? "good" : "warning"}
               icon={Boxes}
+              help="ATP es el inventario liberado y vigente que queda disponible después de descontar las reservas activas."
               progress={atpPct}
               target={90}
             />
@@ -2427,6 +2507,7 @@ function App() {
               comparison={`${points(lowPct - 10)} vs. meta`}
               status={lowPct <= 10 ? "good" : "warning"}
               icon={Activity}
+              help="ROP es el punto de reorden: demanda diaria × plazo de reposición + stock de seguridad."
               progress={Math.min(100, lowPct)}
               target={10}
               inverse
@@ -2438,6 +2519,7 @@ function App() {
               comparison={`${points(accuracyPct - 95)} vs. meta`}
               status={accuracyPct >= 95 ? "good" : "warning"}
               icon={ShieldCheck}
+              help="Exactitud = 100% menos la diferencia absoluta entre el saldo teórico y el último conteo aprobado."
               progress={accuracyPct}
               target={95}
             />
@@ -2518,7 +2600,24 @@ function App() {
               </div>
               <div className="risk-bars">
                 {dashboardRisk.map((row: Row) => (
-                  <div className="risk-row" key={row.id}>
+                  <button
+                    type="button"
+                    className="risk-row"
+                    key={row.id}
+                    title={`Filtrar el tablero por ${row.name}`}
+                    aria-label={`Filtrar el tablero por ${row.name}`}
+                    onClick={() => {
+                      const warehouse = warehouseById.get(row.id);
+                      const next = {
+                        ...dashboardFilters,
+                        plant: warehouse?.center || "Todas",
+                        warehouse: row.id,
+                      };
+                      setDashboardDraft(next);
+                      setDashboardFilters(next);
+                      setDismissedAlert("");
+                    }}
+                  >
                     <strong>{row.name}</strong>
                     <div>
                       <span
@@ -2540,7 +2639,7 @@ function App() {
                       />
                     </div>
                     <b>{fmt(row.gap)}</b>
-                  </div>
+                  </button>
                 ))}
                 {!dashboardRisk.length && (
                   <div className="dashboard-empty">Sin almacenes para los filtros aplicados.</div>
@@ -2561,7 +2660,9 @@ function App() {
               <div>
                 <h3>Inventario y acciones prioritarias</h3>
                 <p>
-                  {dashboardRowsAll.length} posiciones SKU–almacén · {dashboardRowsAll.filter((row: Row) => row.severity > 0).length} requieren atención
+                  {dashboardIsConsolidated
+                    ? `${dashboardRows.length} prioridades visibles de ${dashboardRowsAll.filter((row: Row) => row.severity > 0).length} pendientes`
+                    : `${dashboardRowsAll.length} posiciones del alcance · ${dashboardRowsAll.filter((row: Row) => row.severity > 0).length} requieren atención`}
                 </p>
               </div>
               <div className="dashboard-card-meta">
@@ -2583,15 +2684,12 @@ function App() {
               <table>
                 <thead>
                   <tr>
-                    <th>SKU</th>
-                    <th>Producto</th>
+                    <th>Artículo</th>
                     <th>Planta / centro</th>
-                    <th>Stock físico</th>
-                    <th>ATP</th>
-                    <th>ROP</th>
-                    <th>Lote / control</th>
-                    <th>Estado</th>
-                    <th>Acciones</th>
+                    <th>Disponibilidad</th>
+                    <th>Diagnóstico</th>
+                    <th>Seguimiento</th>
+                    <th>Acción</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2600,32 +2698,23 @@ function App() {
                       key={row.id}
                       className={row.severity === 2 ? "dashboard-critical-row" : ""}
                     >
-                      <td><strong>{row.article_id}</strong></td>
                       <td>
                         <strong>{row.article?.name || row.article}</strong>
-                        <small>{row.article?.unit || row.unit}</small>
+                        <small>{row.article_id} · {row.article?.unit || row.unit}</small>
                       </td>
                       <td>{warehouseById.get(row.warehouse_id)?.name || row.warehouse_id}</td>
-                      <td>{fmt(row.physical)}</td>
                       <td className={number(row.atpRatio) < 90 ? "metric-danger" : ""}>
-                        <strong>{fmt(row.available)}</strong>
-                        <small>{percent(row.atpRatio)}</small>
-                      </td>
-                      <td>{fmt(row.rop)}</td>
-                      <td>
-                        <strong>{row.issue === "accuracy" ? row.primaryCount?.lot_id : row.lot_id}</strong>
-                        <small>
-                          {row.issue === "accuracy"
-                            ? `${locationById.get(row.primaryCount?.location_id)?.name || row.primaryCount?.location_id} · diferencia ${fmt(row.countDifference)}`
-                            : row.expiry
-                              ? `${date(row.expiry)} · ${row.daysToExpiry} días`
-                              : "Sin vencimiento"}
-                        </small>
+                        <strong>ATP {fmt(row.available)} · {percent(row.atpRatio)}</strong>
+                        <small>Físico {fmt(row.physical)} · ROP {fmt(row.rop)}</small>
                       </td>
                       <td>
                         <span className={`dashboard-status severity-${row.severity}`}>
                           {row.statusText}
                         </span>
+                      </td>
+                      <td>
+                        <strong>{row.workflow}</strong>
+                        <small>{row.owner}</small>
                       </td>
                       <td>
                         <div className="dashboard-row-actions">
@@ -2638,7 +2727,9 @@ function App() {
                                   ? setCoverage(row)
                                   : row.issue === "accuracy"
                                     ? reviewDashboardCount(row)
-                                  : navigate(row.actionPage)
+                                  : row.issue === "rop"
+                                    ? openRopForRow(row)
+                                    : navigate(row.actionPage)
                               }
                             >
                               {row.actionLabel}
@@ -2652,7 +2743,7 @@ function App() {
                   ))}
                   {!dashboardRows.length && (
                     <tr>
-                      <td colSpan={9} className="dashboard-empty">
+                      <td colSpan={6} className="dashboard-empty">
                         No hay inventario para los filtros aplicados.
                       </td>
                     </tr>
@@ -3203,7 +3294,6 @@ function App() {
         </>
       );
     if (page === "Punto de reorden" || page === "Indicadores") {
-      const scopedRop = ropPlant !== "Todas" || ropWarehouse !== "Todos";
       const ropWarehouseIds = new Set(
         (data.warehouses || [])
           .filter(
@@ -3216,28 +3306,43 @@ function App() {
       const scopedInventory = (data.inventory || []).filter((row: Row) =>
         ropWarehouseIds.has(row.warehouse_id),
       );
-      const scopedArticleIds = new Set(
-        scopedInventory.map((row: Row) => row.article_id),
-      );
-      const replenishmentRows = (data.planning || [])
-        .filter((row: Row) => !scopedRop || scopedArticleIds.has(row.id))
-        .map((row: Row) => {
-          const available = scopedRop
-            ? scopedInventory
-                .filter((item: Row) => item.article_id === row.id)
-                .reduce((sum: number, item: Row) => sum + number(item.available), 0)
-            : number(row.available);
-          // Las compras del piloto todavía no poseen almacén destino en el
-          // documento maestro. Solo se incluyen en la vista consolidada para
-          // evitar atribuir tránsito global a una planta incorrecta.
-          const incoming = scopedRop ? 0 : number(row.incoming);
-          const rop = number(row.rop);
+      const replenishmentGroups = Array.from(
+        scopedInventory
+          .reduce((groups: Map<string, Row>, item: Row) => {
+            const key = `${item.article_id}:${item.warehouse_id}`;
+            const group = groups.get(key) || {
+              id: key,
+              articleId: item.article_id,
+              warehouse_id: item.warehouse_id,
+              positions: [],
+            };
+            group.positions.push(item);
+            groups.set(key, group);
+            return groups;
+          }, new Map<string, Row>())
+          .values(),
+      ) as Row[];
+      const replenishmentRows = replenishmentGroups
+        .filter((group: Row) => ropArticle === "Todos" || group.articleId === ropArticle)
+        .map((group: Row) => {
+          const article = articleById.get(group.articleId) || {};
+          const warehouse = warehouseById.get(group.warehouse_id) || {};
+          const available = (group.positions || []).reduce(
+            (sum: number, item: Row) => sum + number(item.available),
+            0,
+          );
+          // El documento de compra actual no identifica almacén destino. No se
+          // atribuye tránsito global a una planta para evitar una cobertura falsa.
+          const incoming = 0;
+          const rop =
+            number(article.daily_demand) * number(article.lead_days) +
+            number(article.safety_stock);
           const position = available + incoming;
           const noAtp = available <= 0;
           const underRop = position <= rop;
           const gap = Math.max(0, rop - position);
           const suggestion = (data.suggestions || []).find(
-            (item: Row) => item.article_id === row.id && item.status === "ABIERTA",
+            (item: Row) => item.article_id === group.articleId && item.status === "ABIERTA",
           );
           const recommendation =
             noAtp && !underRop && incoming > 0
@@ -3248,10 +3353,16 @@ function App() {
                   ? "Generar sugerencia de reposición"
                   : "Sin acción requerida";
           return {
-            ...row,
+            ...article,
+            id: group.id,
+            articleId: group.articleId,
+            warehouse_id: group.warehouse_id,
+            warehouseName: warehouse.name || group.warehouse_id,
+            plant: warehouse.center || "—",
             available,
             incoming,
             position,
+            rop,
             gap,
             noAtp,
             underRop,
@@ -3262,7 +3373,8 @@ function App() {
         })
         .sort(
           (a: Row, b: Row) =>
-            b.priority - a.priority || b.gap - a.gap || a.name.localeCompare(b.name),
+            b.priority - a.priority || b.gap - a.gap ||
+            a.name.localeCompare(b.name) || a.warehouseName.localeCompare(b.warehouseName),
         );
       const noAtpCount = replenishmentRows.filter((row: Row) => row.noAtp).length;
       const lowWithAtpCount = replenishmentRows.filter(
@@ -3285,7 +3397,7 @@ function App() {
       const openSuggestions = (data.suggestions || []).filter(
         (row: Row) =>
           row.status === "ABIERTA" &&
-          replenishmentRows.some((item: Row) => item.id === row.article_id),
+          replenishmentRows.some((item: Row) => item.articleId === row.article_id),
       );
       return (
         <>
@@ -3298,6 +3410,7 @@ function App() {
                 onChange={(event) => {
                   setRopPlant(event.target.value);
                   setRopWarehouse("Todos");
+                  setRopArticle("Todos");
                 }}
               >
                 <option value="Todas">Todas las plantas</option>
@@ -3309,12 +3422,34 @@ function App() {
               <select
                 aria-label="Filtrar ROP por almacén"
                 value={ropWarehouse}
-                onChange={(event) => setRopWarehouse(event.target.value)}
+                onChange={(event) => {
+                  setRopWarehouse(event.target.value);
+                  setRopArticle("Todos");
+                }}
               >
                 <option value="Todos">Todos los almacenes</option>
                 {(data.warehouses || [])
                   .filter((warehouse: Row) => ropPlant === "Todas" || warehouse.center === ropPlant)
                   .map((warehouse: Row) => <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>)}
+              </select>
+            </label>
+            <label>
+              Artículo
+              <select
+                aria-label="Filtrar ROP por artículo"
+                value={ropArticle}
+                onChange={(event) => setRopArticle(event.target.value)}
+              >
+                <option value="Todos">Todos los artículos</option>
+                {(data.articles || [])
+                  .filter((article: Row) =>
+                    scopedInventory.some((item: Row) => item.article_id === article.id),
+                  )
+                  .map((article: Row) => (
+                    <option key={article.id} value={article.id}>
+                      {article.id} · {article.name}
+                    </option>
+                  ))}
               </select>
             </label>
             <span className="muted">
@@ -3331,9 +3466,10 @@ function App() {
                 Atiende primero la falta inmediata y luego recupera la cobertura.
               </p>
             </div>
-            {can("compras") &&
-              btn("Evaluar y generar sugerencias", () =>
-                send("replenishment.evaluate", { id: reference("ROP") }),
+            {can("compras") && attentionCount > 0 &&
+              btn(
+                "Preparar prioridad principal",
+                () => prepareReplenishmentRequest(replenishmentRows[0] as Row),
                 true,
               )}
           </section>
@@ -3392,7 +3528,12 @@ function App() {
                 {
                   key: "name",
                   label: "Artículo / SKU",
-                  render: (r) => <><strong>{r.name}</strong><small>{r.id} · {r.unit}</small></>,
+                  render: (r) => <><strong>{r.name}</strong><small>{r.articleId} · {r.unit}</small></>,
+                },
+                {
+                  key: "warehouseName",
+                  label: "Planta / almacén",
+                  render: (r) => <><strong>{r.warehouseName}</strong><small>{r.plant}</small></>,
                 },
                 { key: "available", label: "ATP", render: (r) => <strong>{fmt(r.available)}</strong> },
                 { key: "incoming", label: "Por recibir", render: (r) => fmt(r.incoming) },
@@ -3422,15 +3563,8 @@ function App() {
               (r) =>
                 r.noAtp && !r.underRop && r.incoming > 0 ? (
                   compact("Revisar recepción", () => navigate("Órdenes de compra"))
-                ) : r.underRop && r.suggestion ? (
+                ) : r.underRop ? (
                   compact("Preparar solicitud", () => prepareReplenishmentRequest(r))
-                ) : r.underRop && can("compras") ? (
-                  compact("Generar sugerencia", () =>
-                    send("replenishment.evaluate", {
-                      id: reference("ROP"),
-                      articleId: r.id,
-                    }),
-                  )
                 ) : (
                   <span className="rop-no-action">Sin acción</span>
                 ),
@@ -3976,7 +4110,10 @@ function App() {
                     <strong>Compra, producción o reposición</strong>
                     <small>Úsalo cuando las alternativas anteriores no cubran la necesidad.</small>
                   </div>
-                  <button onClick={() => go("Punto de reorden")}>Preparar reposición</button>
+                  <button onClick={() => {
+                    setCoverage(null);
+                    openRopForRow(coverage);
+                  }}>Preparar reposición</button>
                 </article>
               </div>
             </aside>
@@ -4075,6 +4212,16 @@ function App() {
                         )}
                       </>
                     )}
+                    <div className="detail-decision-context">
+                      <div>
+                        <span>Responsable</span>
+                        <strong>{detail.owner || "Operaciones de inventario"}</strong>
+                      </div>
+                      <div>
+                        <span>Seguimiento</span>
+                        <strong>{detail.workflow || "Sin acción pendiente"}</strong>
+                      </div>
+                    </div>
                     {detail.issue !== "ok" && (
                       <button
                         className="detail-primary-action"
@@ -4082,6 +4229,7 @@ function App() {
                           setDetail(null);
                           if (detail.issue === "atp") setCoverage(detail);
                           else if (detail.issue === "accuracy") reviewDashboardCount(detail);
+                          else if (detail.issue === "rop") openRopForRow(detail);
                           else navigate(detail.actionPage);
                         }}
                       >
@@ -4154,6 +4302,7 @@ function DashboardKpi({
   icon: Icon,
   progress,
   target = 100,
+  help,
 }: any) {
   const boundedProgress = Math.max(0, Math.min(100, number(progress)));
   const boundedTarget = Math.max(1.5, Math.min(98.5, number(target)));
@@ -4161,7 +4310,14 @@ function DashboardKpi({
     <article className={`dashboard-kpi ${status}`}>
       <div className="dashboard-kpi-label">
         <span>{label}</span>
-        <Icon size={16} />
+        <span
+          className="dashboard-kpi-help"
+          title={help}
+          aria-label={`${label}: ${help}`}
+          tabIndex={0}
+        >
+          <Icon size={16} />
+        </span>
       </div>
       <div className="dashboard-kpi-value">
         {value} {secondary && <small>{secondary}</small>}
@@ -4193,7 +4349,7 @@ function DashboardTrend({
   const width = 640;
   const height = 176;
   const left = 42;
-  const right = 54;
+  const right = 14;
   const top = 14;
   const bottom = 32;
   const chartWidth = width - left - right;
@@ -4222,18 +4378,23 @@ function DashboardTrend({
         `${index === 0 ? "M" : "L"}${x(point.index).toFixed(1)},${y(point.value).toFixed(1)}`,
       )
       .join(" ");
-  const metrics: { key: Metric; label: string; offset: number }[] = [
-    { key: "atp", label: "ATP", offset: 3 },
-    { key: "accuracy", label: "Exact.", offset: -7 },
+  const metrics: { key: Metric; label: string; target: number }[] = [
+    { key: "atp", label: "ATP", target: 90 },
+    { key: "accuracy", label: "Exactitud", target: 95 },
   ];
   const hasData = metrics.some(({ key }) => series(key).length > 0);
+  const currentValues = metrics.map((metric) => ({
+    ...metric,
+    value: series(metric.key).at(-1)?.value ?? null,
+  }));
   return (
     <div className="dashboard-trend">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        role="img"
-        aria-label="Evolución de ATP y exactitud del inventario frente a sus metas"
-      >
+      <div className="trend-canvas">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          role="img"
+          aria-label="Evolución de ATP y exactitud del inventario frente a sus metas"
+        >
         {[80, 85, 90, 95, 100].map((tick) => (
           <g key={tick}>
             <line
@@ -4262,7 +4423,7 @@ function DashboardTrend({
           y2={y(95)}
           className="trend-target-line target-quality"
         />
-        {metrics.map(({ key, label, offset }) => {
+        {metrics.map(({ key }) => {
           const valid = series(key);
           const last = valid[valid.length - 1];
           const line = path(key);
@@ -4278,15 +4439,6 @@ function DashboardTrend({
                   className={`trend-series-point trend-${key}-point`}
                 />
               ))}
-              {last && (
-                <text
-                  x={width - right + 7}
-                  y={y(last.value) + offset}
-                  className={`trend-end-label trend-${key}-label`}
-                >
-                  {label} {percent(last.value, 1)}
-                </text>
-              )}
             </g>
           );
         })}
@@ -4306,7 +4458,21 @@ function DashboardTrend({
             No hay movimientos confirmados en este rango
           </text>
         )}
-      </svg>
+        </svg>
+      </div>
+      <aside className="trend-current-values" aria-label="Valores del último periodo">
+        <span>Último periodo</span>
+        {currentValues.map(({ key, label, value, target }) => (
+          <div key={key} className={`trend-current-${key}`}>
+            <i />
+            <p>
+              <small>{label}</small>
+              <strong>{value === null ? "—" : percent(value, 1)}</strong>
+              <em>Meta {target}%</em>
+            </p>
+          </div>
+        ))}
+      </aside>
     </div>
   );
 }

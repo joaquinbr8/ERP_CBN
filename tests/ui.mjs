@@ -33,6 +33,10 @@ try {
   await expect(page.locator(".dashboard-trend .trend-series")).toHaveCount(2);
   await expect(page.locator(".chart-legend")).toContainText("Exactitud");
   await expect(page.locator(".chart-legend")).not.toContainText("FEFO");
+  await expect(page.locator(".trend-current-values")).toContainText("Último periodo");
+  await expect(page.locator(".trend-current-values")).toContainText("Meta 95%");
+  await expect(page.getByRole("alert")).toContainText("Responsable:");
+  await expect(page.getByRole("alert")).toContainText("Seguimiento:");
   await page.getByLabel("Buscar SKU o producto").fill("EN-001");
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
@@ -155,6 +159,14 @@ try {
     fullPage: true,
   });
   await page.getByRole("button", { name: "Dashboard", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Filtrar el tablero por Planta El Alto" })
+    .click();
+  await expect(page.getByLabel("Filtrar por almacén")).toHaveValue("EL-ALTO");
+  await expect(
+    page.locator(".dashboard-kpis").filter({ hasText: "Exactitud del inventario" }),
+  ).toContainText("93,1%");
+  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
   await page.screenshot({
     path: ".local/screenshots/02-dashboard.png",
     fullPage: true,
@@ -162,6 +174,18 @@ try {
   await page.getByRole("button", { name: "Ampliar gráfica" }).click();
   await expect(page.locator(".dashboard-trend-card")).toHaveClass(/expanded/);
   await page.getByRole("button", { name: "Restaurar gráfica" }).click();
+  const bockReorderRow = page.locator(".dashboard-priorities tbody tr").filter({
+    hasText: "BOC-0620",
+  }).filter({ hasText: "Centro de distribución" });
+  await bockReorderRow.getByRole("button", { name: "Preparar reposición" }).click();
+  await expect(page.getByRole("heading", { name: "Punto de reorden" })).toBeVisible();
+  await expect(page.getByLabel("Filtrar ROP por planta")).not.toHaveValue("Todas");
+  await expect(page.getByLabel("Filtrar ROP por almacén")).not.toHaveValue("Todos");
+  await expect(page.getByLabel("Filtrar ROP por artículo")).toHaveValue("BOC-0620");
+  await expect(page.locator(".rop-panel tbody tr")).toHaveCount(1);
+  await expect(page.locator(".rop-panel tbody tr")).toContainText("Bock · botella 620 ml");
+  await expect(page.locator(".rop-panel tbody tr")).toContainText("480");
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   await page
     .getByRole("alert")
     .getByRole("button", { name: "Revisar reposición" })
