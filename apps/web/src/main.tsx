@@ -1080,6 +1080,27 @@ function App() {
         .filter(Boolean),
     ),
   ] as string[];
+  const dashboardDraftWarehouseIds = new Set(
+    (data.warehouses || [])
+      .filter(
+        (warehouse: Row) =>
+          (dashboardDraft.plant === "Todas" || warehouse.center === dashboardDraft.plant) &&
+          (dashboardDraft.warehouse === "Todos" || warehouse.id === dashboardDraft.warehouse),
+      )
+      .map((warehouse: Row) => warehouse.id),
+  );
+  const dashboardDraftArticleIds = new Set(
+    inv
+      .filter((row: Row) => dashboardDraftWarehouseIds.has(row.warehouse_id))
+      .map((row: Row) => row.article_id),
+  );
+  const dashboardDraftCategories = [
+    ...new Set(
+      (data.articles || [])
+        .filter((article: Row) => dashboardDraftArticleIds.has(article.id))
+        .map((article: Row) => article.category),
+    ),
+  ] as string[];
   const countRows: Row[] = (data.counts || []).map((count: Row) => {
     const location = locationById.get(count.location_id) || {};
     const warehouse = warehouseById.get(location.warehouse_id) || {};
@@ -1215,40 +1236,41 @@ function App() {
   const atpPct = dashboardPhysical
     ? (dashboardAvailable / dashboardPhysical) * 100
     : 100;
-  const dashboardPositionedArticleIds = new Set(
-    dashboardInventory.map((row: Row) => row.article_id),
-  );
-  const dashboardPlanning = dashboardArticles
-    // ROP is evaluated only for SKUs handled by the selected scope. A SKU that
-    // has never had a position in Santa Cruz, for example, must not be counted
-    // as a Santa Cruz shortage merely because its local balance is zero.
-    .filter((article: Row) => dashboardPositionedArticleIds.has(article.id))
-    .map((article: Row) => {
-    const positions = dashboardInventory.filter(
-      (row) => row.article_id === article.id,
-    );
-    const available = positions.reduce(
-      (total, row) => total + number(row.available),
-      0,
-    );
-    const planning = (data.planning || []).find(
-      (row: Row) => row.id === article.id,
-    );
-    const incoming =
-      dashboardFilters.warehouse === "Todos" ? number(planning?.incoming) : 0;
+  const dashboardPlanning = Array.from(
+    dashboardInventory
+      .reduce((groups: Map<string, Row>, position: Row) => {
+        const key = `${position.article_id}:${position.warehouse_id}`;
+        const group = groups.get(key) || {
+          id: key,
+          article_id: position.article_id,
+          warehouse_id: position.warehouse_id,
+          available: 0,
+        };
+        group.available += number(position.available);
+        groups.set(key, group);
+        return groups;
+      }, new Map<string, Row>())
+      .values(),
+  ).map((group: Row) => {
+    const article = articleById.get(group.article_id) || {};
     const rop =
       number(article.daily_demand) * number(article.lead_days) +
       number(article.safety_stock);
-      return {
-        ...article,
-        available,
-        incoming,
-        position: available + incoming,
-        rop,
-        underRop: available + incoming <= rop,
-      };
-    });
-  const dashboardLow = dashboardPlanning.filter((row: Row) => row.underRop);
+    return {
+      ...group,
+      article,
+      rop,
+      position: number(group.available),
+      underRop: number(group.available) <= rop,
+    };
+  });
+  const dashboardLow = dashboardPlanning
+    .filter((row: Row) => row.underRop)
+    .sort(
+      (a: Row, b: Row) =>
+        number(b.rop) - number(b.position) -
+        (number(a.rop) - number(a.position)),
+    );
   const lowPct = dashboardPlanning.length
     ? (dashboardLow.length / dashboardPlanning.length) * 100
     : 0;
@@ -1299,7 +1321,7 @@ function App() {
     : dashboardPhysical
       ? Math.max(0, 100 - (reconciliationDifference / dashboardPhysical) * 100)
       : 100;
-  const dashboardRisk: Row[] = (data.warehouses || [])
+  const dashboardWarehouseRisk: Row[] = (data.warehouses || [])
     .filter((warehouse: Row) => dashboardWarehouseIds.has(warehouse.id))
     .map((warehouse: Row) => {
       const positions = dashboardInventory.filter(
@@ -1330,6 +1352,7 @@ function App() {
       const evaluated = evaluatedArticles.length;
       return {
         id: warehouse.id,
+        plant: warehouse.center || warehouse.name,
         name: warehouse.name,
         belowRop,
         evaluated,
@@ -1345,6 +1368,29 @@ function App() {
       (a: Row, b: Row) =>
         b.riskPct - a.riskPct || b.gap - a.gap,
     );
+  const dashboardRisk = Array.from(
+    dashboardWarehouseRisk.reduce((plants: Map<string, Row>, warehouse: Row) => {
+      const plant = warehouse.plant || warehouse.name;
+      const current = plants.get(plant) || {
+        id: plant,
+        plant,
+        name: plant === "CBN-PILOTO" ? "Planta piloto / CD" : plant,
+        belowRop: 0,
+        evaluated: 0,
+        gap: 0,
+      };
+      current.belowRop += number(warehouse.belowRop);
+      current.evaluated += number(warehouse.evaluated);
+      current.gap += number(warehouse.gap);
+      current.riskPct = current.evaluated
+        ? (current.belowRop / current.evaluated) * 100
+        : 0;
+      plants.set(plant, current);
+      return plants;
+    }, new Map<string, Row>()).values(),
+  ).sort(
+    (a: Row, b: Row) => b.riskPct - a.riskPct || b.gap - a.gap,
+  );
   const dashboardRiskGapMax = Math.max(
     1,
     ...dashboardRisk.map((row: Row) => row.gap),
@@ -1675,6 +1721,15 @@ function App() {
   // The banner surfaces only the most urgent breached KPI. Local exceptions
   // remain visible in the decision centre without falsely presenting the whole
   // portfolio as failed.
+  const dashboardLowPriority = dashboardLow.slice(0, 2).map((row: Row) => {
+    const article = row.article || articleById.get(row.article_id) || {};
+    const warehouse = warehouseById.get(row.warehouse_id) || {};
+    return `${article.name || "Producto sin nombre"} en ${warehouse.name || "almacén sin identificar"}`;
+  });
+  const dashboardLowRemaining = Math.max(
+    0,
+    dashboardLow.length - dashboardLowPriority.length,
+  );
   const dashboardAlert = ([
     accuracyPct < 95
       ? {
@@ -1713,10 +1768,7 @@ function App() {
           score: lowPct - 10,
           level: lowPct > 20 ? "critical" : "warning",
           title: "Reposición requerida para evitar quiebres",
-          detail: `${dashboardLow.length} de ${dashboardPlanning.length} SKU están bajo su punto de reorden. Prioriza ${dashboardLow
-            .slice(0, 3)
-            .map((row: Row) => row.id)
-            .join(", ")}.`,
+          detail: `${dashboardLow.length} de ${dashboardPlanning.length} productos evaluados por almacén necesitan reposición. Atiende primero: ${dashboardLowPriority.join("; ")}${dashboardLowRemaining ? `; y ${dashboardLowRemaining} casos adicionales` : ""}.`,
           gap: `${percent(lowPct)} DEL PORTAFOLIO`,
           action: "Revisar reposición",
           page: "Punto de reorden",
@@ -2340,6 +2392,8 @@ function App() {
                     ...dashboardDraft,
                     plant: event.target.value,
                     warehouse: "Todos",
+                    category: "Todas",
+                    sku: "",
                   })
                 }
               >
@@ -2360,6 +2414,8 @@ function App() {
                   setDashboardDraft({
                     ...dashboardDraft,
                     warehouse: event.target.value,
+                    category: "Todas",
+                    sku: "",
                   })
                 }
               >
@@ -2390,8 +2446,8 @@ function App() {
                 }
               >
                 <option value="Todas">Todas las categorías</option>
-                {[...new Set(data.articles.map((row: Row) => row.category))].map(
-                  (item: any) => (
+                {dashboardDraftCategories.map(
+                  (item: string) => (
                     <option key={item}>{item}</option>
                   ),
                 )}
@@ -2560,7 +2616,15 @@ function App() {
                   </button>
                 </div>
               </div>
-              <DashboardTrend points={trendPoints} />
+              {dashboardInventory.length ? (
+                <DashboardTrend points={trendPoints} />
+              ) : (
+                <div className="dashboard-chart-empty">
+                  <Boxes size={24} />
+                  <strong>Sin inventario en este alcance</strong>
+                  <span>Prueba otra planta, almacén, categoría o SKU.</span>
+                </div>
+              )}
               <small className="dashboard-chart-note">
                 ATP se reconstruye con movimientos confirmados y exactitud usa
                 conteos aprobados. Metas: ATP 90% y exactitud 95%. El control
@@ -2573,8 +2637,8 @@ function App() {
             >
               <div className="dashboard-card-heading">
                 <div>
-                  <h3>Riesgo por almacén</h3>
-                  <p>Situación actual de los almacenes seleccionados.</p>
+                  <h3>Riesgo por planta</h3>
+                  <p>Resumen consolidado de sus almacenes seleccionados.</p>
                 </div>
                 <div className="dashboard-card-meta">
                   <button
@@ -2585,7 +2649,7 @@ function App() {
                   </button>
                   <button
                     className="dashboard-expand-button"
-                    aria-label={expandedPanel === "risk" ? "Restaurar riesgo por almacén" : "Ampliar riesgo por almacén"}
+                    aria-label={expandedPanel === "risk" ? "Restaurar riesgo por planta" : "Ampliar riesgo por planta"}
                     onClick={() =>
                       setExpandedPanel(expandedPanel === "risk" ? "" : "risk")
                     }
@@ -2595,7 +2659,7 @@ function App() {
                 </div>
               </div>
               <div className="risk-legend">
-                <span><i className="risk-rop" /> Bajo ROP / evaluados</span>
+                <span><i className="risk-rop" /> SKU–almacén bajo ROP / evaluados</span>
                 <span><i className="risk-affected" /> Brecha hasta ROP (u.)</span>
               </div>
               <div className="risk-bars">
@@ -2604,14 +2668,13 @@ function App() {
                     type="button"
                     className="risk-row"
                     key={row.id}
-                    title={`Filtrar el tablero por ${row.name}`}
-                    aria-label={`Filtrar el tablero por ${row.name}`}
+                    title={`Filtrar el tablero por la planta ${row.name}`}
+                    aria-label={`Filtrar el tablero por la planta ${row.name}`}
                     onClick={() => {
-                      const warehouse = warehouseById.get(row.id);
                       const next = {
                         ...dashboardFilters,
-                        plant: warehouse?.center || "Todas",
-                        warehouse: row.id,
+                        plant: row.plant,
+                        warehouse: "Todos",
                       };
                       setDashboardDraft(next);
                       setDashboardFilters(next);
@@ -2642,12 +2705,12 @@ function App() {
                   </button>
                 ))}
                 {!dashboardRisk.length && (
-                  <div className="dashboard-empty">Sin almacenes para los filtros aplicados.</div>
+                  <div className="dashboard-empty">Sin plantas para los filtros aplicados.</div>
                 )}
               </div>
               <small className="dashboard-chart-note">
                 Bajo ROP es una alerta: ATP local ≤ punto de reorden. En las posiciones
-                SKU–almacén evaluadas hay {dashboardRiskBelowTotal} críticas de {dashboardRiskEvaluatedTotal};
+                posiciones SKU–almacén evaluadas hay {dashboardRiskBelowTotal} críticas de {dashboardRiskEvaluatedTotal};
                 faltan {fmt(dashboardRiskGapTotal)} unidades para alcanzar sus ROP.
               </small>
             </section>

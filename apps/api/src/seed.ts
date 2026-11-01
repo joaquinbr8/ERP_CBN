@@ -6,16 +6,42 @@ import { hashPassword } from "./auth";
 async function ensureDashboardDemo(c: any) {
   await c.query(`
     INSERT INTO warehouses(id,name,center) VALUES
-      ('EL-ALTO','Planta El Alto','La Paz'),
-      ('HUARI','Planta Huari','Oruro'),
-      ('TAQUINA','Planta Taquiña','Cochabamba'),
-      ('SANTA-CRUZ','Centro Santa Cruz','Santa Cruz')
-    ON CONFLICT(id) DO NOTHING;
+      ('PLANTA','Producto terminado piloto','CBN-PILOTO'),
+      ('CD','Centro de distribución','CBN-PILOTO'),
+      ('EL-ALTO','Producto terminado El Alto','La Paz'),
+      ('EL-ALTO-MP','Materias primas El Alto','La Paz'),
+      ('EL-ALTO-ENV','Envases El Alto','La Paz'),
+      ('EL-ALTO-MNT','Mantenimiento El Alto','La Paz'),
+      ('HUARI','Producto terminado Huari','Oruro'),
+      ('HUARI-MP','Materias primas Huari','Oruro'),
+      ('HUARI-ENV','Envases Huari','Oruro'),
+      ('HUARI-MNT','Mantenimiento Huari','Oruro'),
+      ('TAQUINA','Producto terminado Taquiña','Cochabamba'),
+      ('TAQUINA-MP','Materias primas Taquiña','Cochabamba'),
+      ('TAQUINA-ENV','Envases Taquiña','Cochabamba'),
+      ('TAQUINA-MNT','Mantenimiento Taquiña','Cochabamba'),
+      ('SANTA-CRUZ','Producto terminado Santa Cruz','Santa Cruz')
+      ,('SANTA-CRUZ-ENV','Envases retornables Santa Cruz','Santa Cruz')
+      ,('SANTA-CRUZ-MNT','Mantenimiento Santa Cruz','Santa Cruz')
+    ON CONFLICT(id) DO UPDATE SET
+      name=EXCLUDED.name,
+      center=EXCLUDED.center;
     INSERT INTO locations(id,name,warehouse_id) VALUES
       ('EA-PT-01','Producto terminado El Alto','EL-ALTO'),
+      ('EA-MP-01','Materia prima El Alto','EL-ALTO-MP'),
+      ('EA-ENV-01','Envases El Alto','EL-ALTO-ENV'),
+      ('EA-MNT-01','Repuestos El Alto','EL-ALTO-MNT'),
       ('HU-PT-01','Producto terminado Huari','HUARI'),
+      ('HU-MP-01','Materia prima Huari','HUARI-MP'),
+      ('HU-ENV-01','Envases Huari','HUARI-ENV'),
+      ('HU-MNT-01','Repuestos Huari','HUARI-MNT'),
       ('TQ-PT-01','Producto terminado Taquiña','TAQUINA'),
+      ('TQ-MP-01','Materia prima Taquiña','TAQUINA-MP'),
+      ('TQ-ENV-01','Envases Taquiña','TAQUINA-ENV'),
+      ('TQ-MNT-01','Repuestos Taquiña','TAQUINA-MNT'),
       ('SC-PT-01','Producto terminado Santa Cruz','SANTA-CRUZ')
+      ,('SC-ENV-01','Envases retornables Santa Cruz','SANTA-CRUZ-ENV')
+      ,('SC-MNT-01','Repuestos Santa Cruz','SANTA-CRUZ-MNT')
     ON CONFLICT(id) DO NOTHING;
   `);
   const rows = [
@@ -170,6 +196,127 @@ async function ensureDashboardDemo(c: any) {
        WHERE NOT EXISTS(SELECT 1 FROM reservations WHERE document_id=$2)`,
       [randomUUID(), document, row.lot, row.location, row.reserved],
     );
+  }
+  // Broader, operationally plausible coverage for the dashboard filters. Each
+  // productive region has distinct warehouses for materials, packaging and
+  // maintenance. The records remain normalized: article, lot, location,
+  // balance, reservation, movement and count are stored independently.
+  const categoryArticles = [
+    ["MP-002", "Lúpulo pellet", "Materia prima", "kg", "FEFO", 18, 12, 90],
+    ["MP-003", "Maíz cervecero", "Materia prima", "kg", "FEFO", 70, 7, 250],
+    ["EN-002", "Lata 350 ml", "Envases", "unidad", "FIFO", 350, 5, 700],
+    ["EN-003", "Tapa corona", "Envases", "unidad", "FIFO", 600, 4, 1000],
+    ["RP-002", "Rodamiento de llenadora", "Repuestos", "unidad", "FIFO", 2, 20, 8],
+    ["RP-003", "Sello de bomba sanitaria", "Repuestos", "unidad", "FIFO", 3, 14, 10],
+  ] as const;
+  for (const [id, name, category, unit, policy, demand, lead, safety] of categoryArticles) {
+    await c.query(
+      `INSERT INTO articles(id,name,category,unit,policy,abc,daily_demand,lead_days,safety_stock)
+       VALUES($1,$2,$3,$4,$5,'B',$6,$7,$8) ON CONFLICT(id) DO NOTHING`,
+      [id, name, category, unit, policy, demand, lead, safety],
+    );
+  }
+  const categoryRows = [
+    ["EA-MP-MAL-01", "MP-001", "EA-MP-01", 1200, 150, 190],
+    ["EA-MP-LUP-01", "MP-002", "EA-MP-01", 460, 45, 170],
+    ["EA-ENV-BOT-01", "EN-001", "EA-ENV-01", 5200, 600, null],
+    ["EA-ENV-LAT-01", "EN-002", "EA-ENV-01", 3800, 320, null],
+    ["EA-MNT-JUN-01", "RP-001", "EA-MNT-01", 25, 3, null],
+    ["EA-MNT-ROD-01", "RP-002", "EA-MNT-01", 65, 5, null],
+    ["HU-MP-MAL-01", "MP-001", "HU-MP-01", 1080, 120, 185],
+    ["HU-MP-MAIZ-01", "MP-003", "HU-MP-01", 980, 90, 175],
+    ["HU-ENV-BOT-01", "EN-001", "HU-ENV-01", 4500, 500, null],
+    ["HU-ENV-TAP-01", "EN-003", "HU-ENV-01", 4200, 450, null],
+    ["HU-MNT-JUN-01", "RP-001", "HU-MNT-01", 18, 2, null],
+    ["HU-MNT-SEL-01", "RP-003", "HU-MNT-01", 80, 8, null],
+    ["TQ-MP-MAL-01", "MP-001", "TQ-MP-01", 950, 110, 180],
+    ["TQ-MP-LUP-01", "MP-002", "TQ-MP-01", 360, 35, 165],
+    ["TQ-ENV-LAT-01", "EN-002", "TQ-ENV-01", 3100, 280, null],
+    ["TQ-ENV-TAP-01", "EN-003", "TQ-ENV-01", 3900, 400, null],
+    ["TQ-MNT-ROD-01", "RP-002", "TQ-MNT-01", 52, 4, null],
+    ["TQ-MNT-SEL-01", "RP-003", "TQ-MNT-01", 66, 6, null],
+    ["SC-ENV-BOT-01", "EN-001", "SC-ENV-01", 2800, 260, null],
+    ["SC-ENV-TAP-01", "EN-003", "SC-ENV-01", 3500, 300, null],
+    ["SC-MNT-ROD-01", "RP-002", "SC-MNT-01", 58, 5, null],
+    ["PIL-MP-LUP-01", "MP-002", "MP-A1", 410, 35, 160],
+    ["PIL-ENV-LAT-01", "EN-002", "MP-A1", 2600, 240, null],
+    ["PIL-MNT-ROD-01", "RP-002", "MP-A1", 55, 4, null],
+  ] as const;
+  const categoryHistoryDays = [27, 22, 17, 12, 7, 2];
+  const categoryPreviousVariation = [0.06, -0.04, 0.08, -0.07, 0.05, -0.08];
+  const categoryVariation = [0.18, -0.12, 0.24, -0.20, 0.15, -0.25];
+  const categoryCountVariance = [0.035, 0.018, 0.028, 0.012, 0.022, 0.008];
+  for (const [rowIndex, row] of categoryRows.entries()) {
+    const [lot, article, location, physical, reserved, expiryIn] = row;
+    await c.query(
+      `INSERT INTO lots(id,article_id,expiry,received_at,quality)
+       VALUES($1,$2,CASE WHEN $3::integer IS NULL THEN NULL ELSE CURRENT_DATE+$3::integer END,CURRENT_DATE-35,'LIBERADO')
+       ON CONFLICT(id) DO NOTHING`,
+      [lot, article, expiryIn],
+    );
+    await c.query(
+      `INSERT INTO balances(lot_id,location_id,physical,reserved)
+       VALUES($1,$2,$3,$4) ON CONFLICT(lot_id,location_id) DO NOTHING`,
+      [lot, location, physical, reserved],
+    );
+    await c.query(
+      `INSERT INTO movements(id,business_key,type,lot_id,location_id,quantity,document_id,reason,actor,created_at)
+       VALUES($1,$2,'RECEPCION',$3,$4,$5,$6,'Apertura histórica por categoría para el dashboard','demo-dashboard',CURRENT_DATE-35)
+       ON CONFLICT(business_key) DO NOTHING`,
+      [randomUUID(), `demo-category:opening:${lot}`, lot, location, physical, `REC-CAT-${lot}`],
+    );
+    const document = `PED-CAT-${lot}`;
+    await c.query(
+      `INSERT INTO documents(id,kind,status,data,created_at)
+       VALUES($1,'PEDIDO','RESERVADO',$2,CURRENT_DATE-3) ON CONFLICT(id) DO NOTHING`,
+      [document, {
+        articleId: article,
+        quantity: String(reserved),
+        customer: "Demanda operativa por categoría · DASHBOARD",
+        warehouseId: categoryWarehouse(location),
+      }],
+    );
+    await c.query(
+      `INSERT INTO reservations(id,document_id,lot_id,location_id,quantity,status,explanation)
+       SELECT $1,$2,$3,$4,$5,'ACTIVA','Reserva ficticia coherente con el saldo del dashboard.'
+       WHERE NOT EXISTS(SELECT 1 FROM reservations WHERE document_id=$2)`,
+      [randomUUID(), document, lot, location, reserved],
+    );
+    for (const [periodIndex, daysAgo] of categoryHistoryDays.entries()) {
+      const shiftedIndex = (periodIndex + rowIndex) % categoryVariation.length;
+      const quantity =
+        Math.round(physical * categoryVariation[shiftedIndex]) -
+        Math.round(physical * categoryPreviousVariation[shiftedIndex]);
+      await c.query(
+        `INSERT INTO movements(id,business_key,type,lot_id,location_id,quantity,document_id,reason,actor,created_at)
+         VALUES($1,$2,'AJUSTE_DEMO',$3,$4,$5,$6,'Variación histórica por categoría y almacén','demo-dashboard',CURRENT_DATE-$7::integer)
+         ON CONFLICT(business_key) DO NOTHING`,
+        [
+          randomUUID(),
+          `demo-category:history-v2:${lot}:${periodIndex + 1}`,
+          lot,
+          location,
+          quantity,
+          `HIST-CAT-${lot}-${periodIndex + 1}`,
+          daysAgo,
+        ],
+      );
+      const difference = Math.max(physical >= 50 ? 1 : 0, Math.round(physical * categoryCountVariance[shiftedIndex]));
+      const reason = `Evolución por categoría ${lot} periodo ${periodIndex + 1}`;
+      await c.query(
+        `INSERT INTO counts(id,lot_id,location_id,theoretical,counted,balance_version,status,reason,created_by,approved_by,created_at)
+         SELECT $1,$2,$3,$4,$5,1,'APROBADO',$6,'demo-dashboard','demo-supervisor',CURRENT_DATE-$7::integer
+         WHERE NOT EXISTS(SELECT 1 FROM counts WHERE reason=$6)`,
+        [randomUUID(), lot, location, physical, physical - difference, reason, daysAgo],
+      );
+      const revisedReason = `Evolución visual v2 ${lot} periodo ${periodIndex + 1}`;
+      await c.query(
+        `INSERT INTO counts(id,lot_id,location_id,theoretical,counted,balance_version,status,reason,created_by,approved_by,created_at)
+         SELECT $1,$2,$3,$4,$5,1,'APROBADO',$6,'demo-dashboard','demo-supervisor',CURRENT_DATE-$7::integer+interval '12 hour'
+         WHERE NOT EXISTS(SELECT 1 FROM counts WHERE reason=$6)`,
+        [randomUUID(), lot, location, physical, physical - difference, revisedReason, daysAgo],
+      );
+    }
   }
   // Scenario design for the executive dashboard:
   // - El Alto: enough ATP/ROP but a material count difference.
@@ -422,6 +569,22 @@ function locationWarehouse(location: string) {
   if (location.startsWith("HU-")) return "HUARI";
   if (location.startsWith("TQ-")) return "TAQUINA";
   return "SANTA-CRUZ";
+}
+function categoryWarehouse(location: string) {
+  const mappings = [
+    ["EA-MP-", "EL-ALTO-MP"],
+    ["EA-ENV-", "EL-ALTO-ENV"],
+    ["EA-MNT-", "EL-ALTO-MNT"],
+    ["HU-MP-", "HUARI-MP"],
+    ["HU-ENV-", "HUARI-ENV"],
+    ["HU-MNT-", "HUARI-MNT"],
+    ["TQ-MP-", "TAQUINA-MP"],
+    ["TQ-ENV-", "TAQUINA-ENV"],
+    ["TQ-MNT-", "TAQUINA-MNT"],
+    ["SC-ENV-", "SANTA-CRUZ-ENV"],
+    ["SC-MNT-", "SANTA-CRUZ-MNT"],
+  ] as const;
+  return mappings.find(([prefix]) => location.startsWith(prefix))?.[1] || "PLANTA";
 }
 async function seed() {
   const db = new Db();

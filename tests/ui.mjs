@@ -29,7 +29,7 @@ try {
   await expect(page.locator(".dashboard-kpis .dashboard-kpi")).toHaveCount(4);
   await expect(
     page.locator(".dashboard-kpis").filter({ hasText: "Exactitud del inventario" }),
-  ).toContainText("98,1%");
+  ).toContainText("97,9%");
   await expect(page.locator(".dashboard-trend .trend-series")).toHaveCount(2);
   await expect(page.locator(".chart-legend")).toContainText("Exactitud");
   await expect(page.locator(".chart-legend")).not.toContainText("FEFO");
@@ -37,18 +37,52 @@ try {
   await expect(page.locator(".trend-current-values")).toContainText("Meta 95%");
   await expect(page.getByRole("alert")).toContainText("Responsable:");
   await expect(page.getByRole("alert")).toContainText("Seguimiento:");
+  await page.getByLabel("Filtrar por planta").selectOption({ label: "La Paz" });
+  await expect(page.getByLabel("Filtrar por almacén").locator("option")).toHaveCount(5);
+  await expect(page.getByLabel("Filtrar por categoría")).toContainText("Envases");
+  await expect(page.getByLabel("Filtrar por categoría")).toContainText("Materia prima");
+  await expect(page.getByLabel("Filtrar por categoría")).toContainText("Repuestos");
+  await page.getByLabel("Filtrar por categoría").selectOption("Envases");
+  await page.getByRole("button", { name: "Aplicar", exact: true }).click();
+  await expect(page.locator(".dashboard-chart-empty")).toHaveCount(0);
+  const envaseTrendY = await page.locator(".trend-atp-point").evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("cy")),
+  );
+  assert.ok(new Set(envaseTrendY).size >= 3, "La evolución de Envases debe tener variación temporal");
+  await page.screenshot({
+    path: ".local/screenshots/02-dashboard-la-paz-envases.png",
+    fullPage: true,
+  });
+  await page.getByLabel("Filtrar por planta").selectOption({ label: "Oruro" });
+  await expect(page.getByLabel("Filtrar por categoría")).toContainText("Repuestos");
+  await page.getByLabel("Filtrar por categoría").selectOption("Repuestos");
+  await page.getByRole("button", { name: "Aplicar", exact: true }).click();
+  await expect(page.locator(".dashboard-chart-empty")).toHaveCount(0);
+  const repuestoTrendY = await page.locator(".trend-atp-point").evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("cy")),
+  );
+  assert.ok(new Set(repuestoTrendY).size >= 3, "La evolución de Repuestos debe tener variación temporal");
+  await page.getByLabel("Filtrar por planta").selectOption({ label: "Santa Cruz" });
+  const santaCruzCategories = await page
+    .getByLabel("Filtrar por categoría")
+    .locator("option")
+    .allTextContents();
+  assert.ok(santaCruzCategories.includes("Envases"));
+  assert.ok(santaCruzCategories.includes("Repuestos"));
+  assert.ok(!santaCruzCategories.includes("Materia prima"));
+  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
   await page.getByLabel("Buscar SKU o producto").fill("EN-001");
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
-  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toBeVisible();
   await page.getByRole("button", { name: "Limpiar", exact: true }).click();
   await page.getByRole("alert").waitFor();
-  await page.getByLabel("Filtrar por almacén").selectOption({ label: "Planta piloto" });
+  await page.getByLabel("Filtrar por almacén").selectOption({ label: "Producto terminado piloto" });
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   await expect(
     page.locator(".dashboard-kpis").filter({ hasText: "Exactitud del inventario" }),
-  ).toContainText("98,5%");
+  ).toContainText("98,6%");
   await page.getByRole("button", { name: "Limpiar", exact: true }).click();
-  await page.getByLabel("Filtrar por almacén").selectOption({ label: "Centro Santa Cruz" });
+  await page.getByLabel("Filtrar por almacén").selectOption({ label: "Producto terminado Santa Cruz" });
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   await expect(
     page.locator(".dashboard-kpis").filter({ hasText: "SKU que requieren reposición" }),
@@ -67,7 +101,7 @@ try {
     fullPage: true,
   });
   await page.getByRole("button", { name: "Limpiar", exact: true }).click();
-  await page.getByLabel("Filtrar por almacén").selectOption({ label: "Planta Huari" });
+  await page.getByLabel("Filtrar por almacén").selectOption({ label: "Producto terminado Huari" });
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   await expect(
     page.locator(".dashboard-kpis").filter({ hasText: "Unidades afectadas" }),
@@ -80,7 +114,7 @@ try {
     fullPage: true,
   });
   await page.getByRole("button", { name: "Limpiar", exact: true }).click();
-  await page.getByLabel("Filtrar por almacén").selectOption({ label: "Planta El Alto" });
+  await page.getByLabel("Filtrar por almacén").selectOption({ label: "Producto terminado El Alto" });
   await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   await expect(
     page.locator(".dashboard-kpis").filter({ hasText: "Exactitud del inventario" }),
@@ -133,7 +167,10 @@ try {
   });
   await page.locator(".drawer").getByRole("button").first().click();
   await expect(page.locator(".dashboard-priorities")).toContainText("Resolver cobertura");
-  await page.locator(".dashboard-priorities").getByRole("button", { name: "Resolver cobertura" }).click();
+  const atpCoverageRow = page.locator(".dashboard-priorities tbody tr").filter({
+    hasText: "PAC-0620",
+  }).filter({ hasText: "Producto terminado Santa Cruz" });
+  await atpCoverageRow.getByRole("button", { name: "Resolver cobertura" }).click();
   await expect(page.getByText("COBERTURA ATP", { exact: true })).toBeVisible();
   await expect(page.locator(".coverage-options")).toContainText("Traslado entre plantas");
   await expect(page.locator(".coverage-options")).toContainText("Reservas activas");
@@ -145,7 +182,7 @@ try {
   await expect(page.getByRole("heading", { name: "Traslado para recuperar cobertura ATP" })).toBeVisible();
   await expect(page.getByLabel("Lote")).toHaveValue("TQ-PAC-COV");
   await page.getByRole("button", { name: "Cancelar" }).click();
-  await page.locator(".dashboard-priorities").getByRole("button", { name: "Resolver cobertura" }).click();
+  await atpCoverageRow.getByRole("button", { name: "Resolver cobertura" }).click();
   await page.getByRole("button", { name: "Revisar reservas" }).click();
   await expect(page.getByRole("heading", { name: "Pedidos" })).toBeVisible();
   await expect(page.getByLabel("Filtrar pedidos por planta")).toHaveValue("Santa Cruz");
@@ -160,12 +197,10 @@ try {
   });
   await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   await page
-    .getByRole("button", { name: "Filtrar el tablero por Planta El Alto" })
+    .getByRole("button", { name: "Filtrar el tablero por la planta La Paz" })
     .click();
-  await expect(page.getByLabel("Filtrar por almacén")).toHaveValue("EL-ALTO");
-  await expect(
-    page.locator(".dashboard-kpis").filter({ hasText: "Exactitud del inventario" }),
-  ).toContainText("93,1%");
+  await expect(page.getByLabel("Filtrar por planta")).toHaveValue("La Paz");
+  await expect(page.getByLabel("Filtrar por almacén")).toHaveValue("Todos");
   await page.getByRole("button", { name: "Limpiar", exact: true }).click();
   await page.screenshot({
     path: ".local/screenshots/02-dashboard.png",
@@ -174,6 +209,8 @@ try {
   await page.getByRole("button", { name: "Ampliar gráfica" }).click();
   await expect(page.locator(".dashboard-trend-card")).toHaveClass(/expanded/);
   await page.getByRole("button", { name: "Restaurar gráfica" }).click();
+  await page.getByLabel("Filtrar por almacén").selectOption("CD");
+  await page.getByRole("button", { name: "Aplicar", exact: true }).click();
   const bockReorderRow = page.locator(".dashboard-priorities tbody tr").filter({
     hasText: "BOC-0620",
   }).filter({ hasText: "Centro de distribución" });
@@ -186,6 +223,7 @@ try {
   await expect(page.locator(".rop-panel tbody tr")).toContainText("Bock · botella 620 ml");
   await expect(page.locator(".rop-panel tbody tr")).toContainText("480");
   await page.getByRole("button", { name: "Dashboard", exact: true }).click();
+  await page.getByRole("button", { name: "Limpiar", exact: true }).click();
   await page
     .getByRole("alert")
     .getByRole("button", { name: "Revisar reposición" })
@@ -193,7 +231,7 @@ try {
   await page.getByRole("heading", { name: "Punto de reorden" }).waitFor();
   await expect(page.getByLabel("Filtrar ROP por planta")).toBeVisible();
   await page.getByLabel("Filtrar ROP por planta").selectOption("Santa Cruz");
-  await expect(page.getByLabel("Filtrar ROP por almacén")).toContainText("Centro Santa Cruz");
+  await expect(page.getByLabel("Filtrar ROP por almacén")).toContainText("Producto terminado Santa Cruz");
   await page.screenshot({
     path: ".local/screenshots/02b-reposicion-filtro-santa-cruz.png",
     fullPage: true,

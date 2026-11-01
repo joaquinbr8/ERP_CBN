@@ -1055,6 +1055,26 @@ main {
   font-size: 8px;
   line-height: 1.4;
 }
+.dashboard-chart-empty {
+  min-height: 210px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 7px;
+  margin: 0 14px;
+  border: 1px dashed #cbd6e2;
+  border-radius: 10px;
+  color: #718198;
+  background: #fbfcfd;
+  text-align: center;
+}
+.dashboard-chart-empty strong {
+  color: #213650;
+  font-size: 13px;
+}
+.dashboard-chart-empty span {
+  font-size: 11px;
+}
 .dashboard-risk-card .dashboard-card-heading {
   padding-bottom: 5px;
 }
