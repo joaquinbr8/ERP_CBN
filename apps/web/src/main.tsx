@@ -2415,21 +2415,6 @@ function App() {
               onClick={() => setExpandedPanel("")}
             />
           )}
-          <div className="dashboard-title-row">
-            <div>
-              <span className="eyebrow">CONTROL OPERATIVO · INVENTARIOS</span>
-              <h1>Sistema Inteligente de Gestión de Inventarios</h1>
-              <p>
-                Estado ejecutivo del stock, la disponibilidad y el riesgo al
-                cierre del {date(dashboardFilters.end)}.
-              </p>
-            </div>
-            <div className="dashboard-updated">
-              <RefreshCw size={13} /> Última actualización
-              <strong>{new Date().toLocaleString("es-BO")}</strong>
-            </div>
-          </div>
-
           <form
             className="dashboard-filters"
             onSubmit={(event) => {

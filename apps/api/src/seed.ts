@@ -589,6 +589,23 @@ function categoryWarehouse(location: string) {
 async function seed() {
   const db = new Db();
   try {
+    const normalized = await db.pool.query(
+      "SELECT to_regclass('public.schema_migrations') IS NOT NULL AND EXISTS(SELECT 1 FROM schema_migrations WHERE version='003') AS applied",
+    ).catch(() => ({ rows: [{ applied: false }] }));
+    if (normalized.rows[0]?.applied) {
+      console.log("La base ya está normalizada en 3FN (migración 003). No se sobrescribieron datos.");
+      return;
+    }
+    const has002 = await db.pool.query(
+      "SELECT to_regclass('public.schema_migrations') IS NOT NULL AND EXISTS(SELECT 1 FROM schema_migrations WHERE version='002') AS applied",
+    ).then((r) => Boolean(r.rows[0]?.applied)).catch(() => false);
+    if (has002) {
+      await db.pool.query(
+        readFileSync(path.join(ROOT, "database/003_warehouse_compat.sql"), "utf8"),
+      );
+      console.log("Migración 003 aplicada: compatibilidad planta-almacén sobre modelo 3FN.");
+      return;
+    }
     await db.pool.query(
       readFileSync(path.join(ROOT, "database/001_initial.sql"), "utf8"),
     );
@@ -714,6 +731,14 @@ async function seed() {
           ". Contraseña local: CbnDemo2026!",
       );
     });
+    await db.pool.query(
+      readFileSync(path.join(ROOT, "database/002_normalize_3fn.sql"), "utf8"),
+    );
+    console.log("Migración 002 aplicada: modelo relacional normalizado en 3FN.");
+    await db.pool.query(
+      readFileSync(path.join(ROOT, "database/003_warehouse_compat.sql"), "utf8"),
+    );
+    console.log("Migración 003 aplicada: compatibilidad planta-almacén sobre modelo 3FN.");
   } finally {
     await db.pool.end();
   }

@@ -59,13 +59,20 @@ export class InventoryService {
       actor: string;
     },
   ) {
+    if (p.document) {
+      await c.query(
+        "INSERT INTO document_headers(id,kind,status) VALUES($1,'OPERACION','REGISTRADA') ON CONFLICT(id) DO NOTHING",
+        [p.document],
+      );
+    }
     await c.query(
-      "INSERT INTO balances(lot_id,location_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
+      "INSERT INTO inventory_positions(lot_id,location_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
       [p.lot, p.location],
     );
     const b = await one(
       c,
-      "SELECT * FROM balances WHERE lot_id=$1 AND location_id=$2 FOR UPDATE",
+      `SELECT p.*,COALESCE((SELECT SUM(r.quantity) FROM reservations r WHERE r.lot_id=p.lot_id AND r.location_id=p.location_id AND r.status='ACTIVA'),0) reserved
+       FROM inventory_positions p WHERE p.lot_id=$1 AND p.location_id=$2 FOR UPDATE`,
       [p.lot, p.location],
     );
     if (new Decimal(b.physical).plus(p.quantity).lt(b.reserved))
@@ -87,7 +94,7 @@ export class InventoryService {
       ],
     );
     await c.query(
-      "UPDATE balances SET physical=physical+$3,version=version+1 WHERE lot_id=$1 AND location_id=$2",
+      "UPDATE inventory_positions SET physical=physical+$3,version=version+1 WHERE lot_id=$1 AND location_id=$2",
       [p.lot, p.location, p.quantity.toString()],
     );
   }
@@ -147,8 +154,8 @@ export class InventoryService {
         ],
       );
       await c.query(
-        "UPDATE balances SET reserved=reserved+$3,version=version+1 WHERE lot_id=$1 AND location_id=$2",
-        [b.lot_id, b.location_id, take.toString()],
+        "UPDATE inventory_positions SET version=version+1 WHERE lot_id=$1 AND location_id=$2",
+        [b.lot_id, b.location_id],
       );
       allocations.push({
         lot: b.lot_id,
@@ -160,15 +167,15 @@ export class InventoryService {
     if (remaining.gt(0)) {
       const selectedWarehouse = await one(
         c,
-        "SELECT name,center FROM warehouses WHERE id=$1",
+        "SELECT w.name,p.name center FROM warehouses w JOIN plants p ON p.id=w.plant_id WHERE w.id=$1",
         [warehouse],
       );
       const alternatives = (
         await c.query(
-          `SELECT w.name,w.center,SUM(v.available) available
-           FROM inventory_view v JOIN warehouses w ON w.id=v.warehouse_id
+          `SELECT w.name,p.name center,SUM(v.available) available
+           FROM inventory_view v JOIN warehouses w ON w.id=v.warehouse_id JOIN plants p ON p.id=w.plant_id
            WHERE v.article_id=$1 AND v.warehouse_id<>$2 AND v.available>0
-           GROUP BY w.id,w.name,w.center ORDER BY SUM(v.available) DESC`,
+           GROUP BY w.id,w.name,p.name ORDER BY SUM(v.available) DESC`,
           [article, warehouse],
         )
       ).rows;
@@ -206,8 +213,8 @@ export class InventoryService {
             " está retenido o vencido. No se puede confirmar la salida.",
         );
       await c.query(
-        "UPDATE balances SET reserved=reserved-$3,version=version+1 WHERE lot_id=$1 AND location_id=$2",
-        [r.lot_id, r.location_id, r.quantity],
+        "UPDATE inventory_positions SET version=version+1 WHERE lot_id=$1 AND location_id=$2",
+        [r.lot_id, r.location_id],
       );
       if (consume)
         await this.move(c, {
@@ -240,11 +247,17 @@ export class InventoryService {
   }
   async planning(c: PoolClient) {
     return (
-      await c.query(`SELECT a.*,a.daily_demand*a.lead_days+a.safety_stock rop,
- COALESCE((SELECT SUM(v.available) FROM inventory_view v WHERE v.article_id=a.id),0) available,
- COALESCE((SELECT SUM((d.data->>'quantity')::numeric-COALESCE((d.data->>'received')::numeric,0)) FROM documents d WHERE d.kind='COMPRA' AND d.status IN ('APROBADA','TRANSITO','PARCIAL') AND d.data->>'articleId'=a.id),0) incoming,
- COALESCE((SELECT SUM((d.data->>'quantity')::numeric-COALESCE((d.data->>'received')::numeric,0)) FROM documents d WHERE d.kind='COMPRA' AND d.status IN ('TRANSITO','PARCIAL') AND d.data->>'articleId'=a.id),0) transit
- FROM articles a ORDER BY a.id`)
+      await c.query(`SELECT a.*,w.warehouse_id,a.daily_demand*a.lead_days+a.safety_stock rop,
+ COALESCE(SUM(v.available),0) available,
+ COALESCE((SELECT SUM(dl.quantity-dl.received_quantity) FROM document_headers d JOIN document_lines dl ON dl.document_id=d.id WHERE d.kind='COMPRA' AND d.status IN ('APROBADA','TRANSITO','PARCIAL') AND dl.article_id=a.id),0) incoming,
+ COALESCE((SELECT SUM(dl.quantity-dl.received_quantity) FROM document_headers d JOIN document_lines dl ON dl.document_id=d.id WHERE d.kind='COMPRA' AND d.status IN ('TRANSITO','PARCIAL') AND dl.article_id=a.id),0) transit
+ FROM articles a
+ CROSS JOIN LATERAL (
+   SELECT DISTINCT iv.warehouse_id FROM inventory_view iv WHERE iv.article_id=a.id
+   UNION ALL SELECT 'PLANTA' WHERE NOT EXISTS(SELECT 1 FROM inventory_view ix WHERE ix.article_id=a.id)
+ ) w
+ LEFT JOIN inventory_view v ON v.article_id=a.id AND v.warehouse_id=w.warehouse_id
+ GROUP BY a.id,w.warehouse_id ORDER BY a.id,w.warehouse_id`)
     ).rows;
   }
 }

@@ -164,7 +164,10 @@ export class Commands {
     });
   }
   async doc(c: PoolClient, p: any, kind?: string, status?: string[]) {
-    const d = await one(c, "SELECT * FROM documents WHERE id=$1 FOR UPDATE", [
+    await c.query("SELECT id FROM document_headers WHERE id=$1 FOR UPDATE", [
+      required(p.id, "Documento"),
+    ]);
+    const d = await one(c, "SELECT * FROM documents WHERE id=$1", [
       required(p.id, "Documento"),
     ]);
     if (!d || (kind && d.kind !== kind)) fail("Documento no encontrado");
@@ -254,9 +257,10 @@ export class Commands {
         );
         break;
       case "warehouse.create":
-        await c.query("INSERT INTO warehouses(id,name) VALUES($1,$2)", [
+        await c.query("INSERT INTO warehouses(id,name,plant_id) VALUES($1,$2,$3)", [
           id,
           required(p.name, "Nombre"),
+          p.plantId || "CBN-PILOTO",
         ]);
         break;
       case "location.create":
@@ -875,14 +879,14 @@ export class Commands {
           const position = new Decimal(a.available).plus(a.incoming);
           if (position.lte(a.rop)) {
             await c.query(
-              `INSERT INTO suggestions(id,article_id,position,rop) VALUES($1,$2,$3,$4) ON CONFLICT(article_id) WHERE status='ABIERTA' DO UPDATE SET position=EXCLUDED.position,rop=EXCLUDED.rop,version=suggestions.version+1`,
-              [randomUUID(), a.id, position.toString(), a.rop],
+              `INSERT INTO suggestions(id,article_id,warehouse_id,position,rop) VALUES($1,$2,$3,$4,$5) ON CONFLICT(article_id,warehouse_id) WHERE status='ABIERTA' DO UPDATE SET position=EXCLUDED.position,rop=EXCLUDED.rop,version=suggestions.version+1`,
+              [randomUUID(), a.id, a.warehouse_id, position.toString(), a.rop],
             );
             opened++;
           } else
             await c.query(
-              "UPDATE suggestions SET status=$2,version=version+1 WHERE article_id=$1 AND status=$3",
-              [a.id, "RESUELTA", "ABIERTA"],
+              "UPDATE suggestions SET status=$3,version=version+1 WHERE article_id=$1 AND warehouse_id=$2 AND status=$4",
+              [a.id, a.warehouse_id, "RESUELTA", "ABIERTA"],
             );
         }
         return {

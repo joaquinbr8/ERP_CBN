@@ -1,0 +1,271 @@
+// ERP CBN · Modelo físico 3FN
+// Fuente de verdad: database/002_normalize_3fn.sql
+// Importar en dbdiagram.io para exportar PDF/PNG con cardinalidades Crow's Foot.
+
+Table plants {
+  id text [pk]
+  name text [not null, unique]
+  region text [not null]
+  active boolean [not null, default: true]
+}
+
+Table warehouse_definitions {
+  id text [pk]
+  name text [not null]
+  plant_id text [not null, ref: > plants.id]
+  indexes { (plant_id, name) [unique] }
+}
+
+Table locations {
+  id text [pk]
+  name text [not null]
+  warehouse_id text [not null, ref: > warehouse_definitions.id]
+  indexes { (warehouse_id, name) [unique] }
+}
+
+Table suppliers {
+  id text [pk]
+  name text [not null, unique]
+  contact text [not null]
+}
+
+Table articles {
+  id text [pk]
+  name text [not null]
+  category text [not null]
+  unit text [not null]
+  policy text [not null, note: "CHECK FIFO o FEFO"]
+  abc text [not null, note: "CHECK A, B o C"]
+  daily_demand numeric [not null, note: "CHECK >= 0"]
+  lead_days integer [not null, note: "CHECK >= 0"]
+  safety_stock numeric [not null, note: "CHECK >= 0"]
+  version integer [not null]
+}
+
+Table lots {
+  id text [pk]
+  article_id text [not null, ref: > articles.id]
+  expiry date
+  received_at timestamptz [not null]
+  quality text [not null, note: "CHECK CUARENTENA, LIBERADO, BLOQUEADO o RECHAZADO"]
+  version integer [not null]
+}
+
+Table inventory_positions {
+  lot_id text [not null, ref: > lots.id]
+  location_id text [not null, ref: > locations.id]
+  physical numeric [not null, note: "CHECK >= 0"]
+  version integer [not null]
+  indexes { (lot_id, location_id) [pk] }
+  Note: "La reserva no se duplica aquí: se deriva de reservations activas."
+}
+
+Table document_headers {
+  id text [pk]
+  kind text [not null, note: "CHECK SOLICITUD, COMPRA, PEDIDO, TRASLADO, PRODUCCION u OPERACION"]
+  status text [not null]
+  version integer [not null]
+  created_at timestamptz [not null]
+}
+
+Table document_lines {
+  document_id text [not null, ref: > document_headers.id]
+  line_no smallint [not null, note: "CHECK > 0"]
+  article_id text [not null, ref: > articles.id]
+  quantity numeric [not null, note: "CHECK > 0"]
+  received_quantity numeric [not null, note: "CHECK entre 0 y quantity"]
+  indexes { (document_id, line_no) [pk] }
+}
+
+Table purchase_requests {
+  document_id text [pk, ref: - document_headers.id]
+  reason text [not null]
+  purchase_document_id text [unique, ref: - purchase_orders.document_id]
+}
+
+Table purchase_orders {
+  document_id text [pk, ref: - document_headers.id]
+  supplier_id text [not null, ref: > suppliers.id]
+  request_document_id text [unique, ref: - purchase_requests.document_id]
+}
+
+Table sales_orders {
+  document_id text [pk, ref: - document_headers.id]
+  warehouse_id text [not null, ref: > warehouse_definitions.id]
+  customer text [not null]
+  payment_type text [not null]
+  promised_date date
+  promise_version integer [not null, note: "CHECK >= 0"]
+  promised_atp numeric [note: "CHECK >= 0"]
+  preparation_days integer [note: "CHECK 0..365"]
+  transit_days integer [note: "CHECK 0..365"]
+  promise_note text
+  delivery_evidence text
+  returned_quantity numeric [not null, note: "CHECK >= 0"]
+}
+
+Table transfer_orders {
+  document_id text [pk, ref: - document_headers.id]
+  lot_id text [not null, ref: > lots.id]
+  from_location_id text [not null, ref: > locations.id]
+  to_location_id text [not null, ref: > locations.id]
+  quantity numeric [not null, note: "CHECK > 0 y origen distinto de destino"]
+}
+
+Table production_orders {
+  document_id text [pk, ref: - document_headers.id]
+  warehouse_id text [not null, ref: > warehouse_definitions.id]
+  input_article_id text [not null, ref: > articles.id]
+  output_article_id text [not null, ref: > articles.id]
+  input_quantity numeric [not null, note: "CHECK > 0"]
+  output_lot_id text [ref: > lots.id]
+  good_quantity numeric [note: "CHECK >= 0"]
+  loss_quantity numeric [note: "CHECK >= 0"]
+}
+
+Table reservations {
+  id uuid [pk]
+  document_id text [not null, ref: > document_headers.id]
+  lot_id text [not null, ref: > lots.id]
+  location_id text [not null, ref: > locations.id]
+  quantity numeric [not null, note: "CHECK > 0"]
+  status text [not null, note: "CHECK ACTIVA, COMPLETADA o CONSUMIDA"]
+  explanation text [not null]
+  indexes { (document_id, lot_id, location_id) [unique] }
+}
+
+Table movements {
+  id uuid [pk]
+  business_key text [not null, unique]
+  type text [not null]
+  lot_id text [not null, ref: > lots.id]
+  location_id text [not null, ref: > locations.id]
+  quantity numeric [not null]
+  document_id text [ref: > document_headers.id]
+  reason text [not null]
+  actor text [not null, ref: > actors.id]
+  created_at timestamptz [not null]
+  Note: "Historial inmutable; correcciones mediante movimiento compensatorio."
+}
+
+Table genealogy {
+  parent_lot text [not null, ref: > lots.id]
+  child_lot text [not null, ref: > lots.id]
+  document_id text [not null, ref: > document_headers.id]
+  quantity numeric [not null, note: "CHECK > 0 y lotes distintos"]
+  indexes { (parent_lot, child_lot, document_id) [pk] }
+}
+
+Table counts {
+  id uuid [pk]
+  lot_id text [not null, ref: > lots.id]
+  location_id text [not null, ref: > locations.id]
+  theoretical numeric [not null]
+  counted numeric [not null, note: "CHECK >= 0"]
+  balance_version integer [not null]
+  status text [not null, note: "CHECK PENDIENTE o APROBADO"]
+  reason text [not null]
+  created_by text [not null, ref: > actors.id]
+  approved_by text [ref: > actors.id]
+  created_at timestamptz [not null]
+  Note: "UNIQUE parcial: solo un conteo PENDIENTE por lote y ubicación."
+}
+
+Table suggestions {
+  id uuid [pk]
+  article_id text [not null, ref: > articles.id]
+  warehouse_id text [not null, ref: > warehouse_definitions.id]
+  position numeric [not null]
+  rop numeric [not null]
+  status text [not null, note: "CHECK ABIERTA o RESUELTA"]
+  version integer [not null]
+  created_at timestamptz [not null]
+  Note: "UNIQUE parcial: una sugerencia ABIERTA por artículo y almacén."
+}
+
+Table role_definitions {
+  id text [pk]
+  name text [not null, unique]
+}
+
+Table permissions {
+  id text [pk]
+  description text [not null, unique]
+}
+
+Table role_permissions {
+  role_id text [not null, ref: > role_definitions.id]
+  permission_id text [not null, ref: > permissions.id]
+  indexes { (role_id, permission_id) [pk] }
+}
+
+Table users {
+  id uuid [pk]
+  username text [not null, unique]
+  name text [not null]
+  password_hash text [not null]
+  role_id text [not null, ref: > role_definitions.id]
+  active boolean [not null]
+  version integer [not null]
+}
+
+Table actors {
+  id text [pk]
+  kind text [not null, note: "CHECK USER, SYSTEM o INTEGRATION"]
+  user_id uuid [unique, ref: - users.id]
+  Note: "CHECK: USER exige user_id; procesos no lo permiten."
+}
+
+Table inbox {
+  id uuid [pk]
+  source text [not null]
+  event_id text [not null]
+  business_key text [not null]
+  fingerprint text [not null]
+  result jsonb
+  status text [not null, note: "CHECK PROCESANDO, APLICADO o ERROR"]
+  attempts integer [not null, note: "CHECK > 0"]
+  created_at timestamptz [not null]
+  indexes { (source, event_id) [unique] }
+}
+
+Table business_effects {
+  business_key text [pk]
+  fingerprint text [not null]
+  result jsonb [not null]
+}
+
+Table outbox {
+  id uuid [pk]
+  event_type text [not null]
+  payload jsonb [not null]
+  destination text [not null]
+  status text [not null, note: "CHECK PENDIENTE, ENVIANDO, ENVIADO o ERROR"]
+  attempts integer [not null, note: "CHECK >= 0"]
+  next_attempt timestamptz [not null]
+  last_error text
+  created_at timestamptz [not null]
+  sent_at timestamptz
+}
+
+Table deliveries {
+  event_id uuid [pk]
+  destination text [not null]
+  payload jsonb [not null]
+  received_at timestamptz [not null]
+}
+
+Table audit {
+  id bigint [pk]
+  actor text [not null, ref: > actors.id]
+  action text [not null]
+  detail jsonb [not null]
+  created_at timestamptz [not null]
+  Note: "Bitácora inmutable."
+}
+
+Table schema_migrations {
+  version text [pk]
+  description text [not null]
+  applied_at timestamptz [not null]
+}

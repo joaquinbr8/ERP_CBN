@@ -94,7 +94,9 @@ class Api {
     const queries: Record<string, string> = {
       articles: "SELECT * FROM articles ORDER BY id",
       suppliers: "SELECT * FROM suppliers ORDER BY id",
-      warehouses: "SELECT * FROM warehouses ORDER BY id",
+      plants: "SELECT * FROM plants ORDER BY name",
+      warehouses:
+        "SELECT w.*,p.region FROM warehouses w JOIN plants p ON p.id=w.plant_id ORDER BY w.id",
       locations: "SELECT * FROM locations ORDER BY id",
       inventory:
         "SELECT * FROM inventory_view ORDER BY article_id,expiry NULLS LAST,lot_id",
